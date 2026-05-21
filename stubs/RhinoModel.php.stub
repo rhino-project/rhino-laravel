@@ -1,0 +1,118 @@
+<?php
+
+namespace App\Models;
+
+use Rhino\Models\RhinoModel as BaseRhinoModel;
+
+/**
+ * Application-level RhinoModel base class.
+ *
+ * This file was published from the Rhino package. You can customise it to add
+ * traits or properties that apply to ALL your Rhino models.
+ *
+ * Published with:  php artisan vendor:publish --tag=rhino-stubs
+ *
+ * To use:
+ *   class Post extends \App\Models\RhinoModel { ... }
+ *
+ * The parent class already includes:
+ *   - HasFactory, SoftDeletes, HasValidation, HidableColumns, HasAutoScope
+ *
+ * Add your own traits or override defaults below.
+ */
+abstract class RhinoModel extends BaseRhinoModel
+{
+    //
+    // Add application-wide traits here. For example:
+    //
+    // use \Rhino\Traits\HasAuditTrail;
+    // use \Rhino\Traits\HasUuid;
+    // use \Rhino\Traits\BelongsToOrganization;
+
+    // -----------------------------------------------------------------
+    // Validation rules
+    // -----------------------------------------------------------------
+    //
+    // protected $validationRules = [
+    //     'title'   => 'required|string|max:255',
+    //     'content' => 'string',
+    //     'status'  => 'string|in:draft,published,archived',
+    // ];
+    //
+    // // Legacy format (flat array of field names — picks from $validationRules):
+    // protected $validationRulesStore = ['title', 'content'];
+    // protected $validationRulesUpdate = ['title', 'content', 'status'];
+    //
+    // // Role-keyed format (per-role overrides with '*' wildcard fallback):
+    // protected $validationRulesStore = [
+    //     'admin'  => ['title' => 'required', 'content' => 'required', 'status' => 'nullable'],
+    //     'editor' => ['title' => 'required', 'content' => 'required'],
+    //     '*'      => ['title' => 'required'],
+    // ];
+    //
+    // protected $validationRulesUpdate = [
+    //     'admin' => ['title' => 'sometimes', 'status' => 'nullable'],
+    //     '*'     => ['title' => 'sometimes', 'content' => 'sometimes'],
+    // ];
+    //
+    // protected $validationRulesMessages = [
+    //     'title.required' => 'Every post needs a title.',
+    //     'title.max'      => 'Post title cannot exceed 255 characters.',
+    // ];
+
+    // -----------------------------------------------------------------
+    // Query Builder — Filtering, Sorting, Search, Includes, Fields
+    // -----------------------------------------------------------------
+    //
+    // public static $allowedFilters  = ['status', 'user_id', 'category_id'];
+    // public static $allowedSorts    = ['created_at', 'title', 'updated_at'];
+    // public static $defaultSort     = '-created_at';
+    // public static $allowedFields   = ['id', 'title', 'status', 'created_at'];
+    // public static $allowedIncludes = ['user', 'comments', 'tags'];
+    // public static $allowedSearch   = ['title', 'content', 'excerpt'];
+
+    // -----------------------------------------------------------------
+    // Pagination
+    // -----------------------------------------------------------------
+    //
+    // public static bool $paginationEnabled = true;
+    // protected $perPage = 25;
+
+    // -----------------------------------------------------------------
+    // Middleware
+    // -----------------------------------------------------------------
+    //
+    // public static array $middleware = ['throttle:60,1'];
+    //
+    // public static array $middlewareActions = [
+    //     'store'   => ['verified'],
+    //     'update'  => ['verified'],
+    //     'destroy' => ['admin'],
+    // ];
+
+    // -----------------------------------------------------------------
+    // Route Exclusion
+    // -----------------------------------------------------------------
+    //
+    // // Disable delete endpoints entirely:
+    // public static array $exceptActions = ['destroy', 'forceDelete'];
+    //
+    // // Read-only API:
+    // public static array $exceptActions = ['store', 'update', 'destroy'];
+
+    // -----------------------------------------------------------------
+    // Column Visibility
+    // -----------------------------------------------------------------
+    //
+    // Always hide specific columns from API responses:
+    // protected static $additionalHiddenColumns = ['api_token', 'stripe_id', 'internal_notes'];
+    //
+    // For role-based visibility, use your Policy's permittedAttributesForShow()
+    // and hiddenAttributesForShow() methods instead.
+
+    // -----------------------------------------------------------------
+    // Audit Trail (requires: use HasAuditTrail;)
+    // -----------------------------------------------------------------
+    //
+    // protected $auditExclude = ['password', 'remember_token', 'api_key'];
+}

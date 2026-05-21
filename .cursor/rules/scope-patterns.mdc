@@ -1,0 +1,75 @@
+---
+description: Eloquent scope conventions for role-based data filtering in the laravel-global-controller package
+globs: app/Models/Scopes/**/*.php
+alwaysApply: false
+---
+
+# Scope Patterns
+
+## Core Rule
+
+Scopes determine WHICH records a user can see. They filter data based on roles/permissions. They never authorize actions — that is the Policy's job.
+
+## Structure
+
+- Implement `Illuminate\Database\Eloquent\Scope` interface
+- Handle unauthenticated state gracefully (return early, don't throw)
+- Prevent infinite recursion when the scope queries the User model
+- Register the scope in the model's `booted()` method
+
+## Good Example
+
+```php
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Scope;
+
+class PostScope implements Scope
+{
+    public function apply(Builder $builder, Model $model)
+    {
+        try {
+            $user = auth('sanctum')->user();
+        } catch (\Exception $e) {
+            return;
+        }
+        if (!$user) return;
+
+        $org = request()->get('organization');
+        if (!$org) return;
+
+        // Admin sees all records (org filtering handled by GlobalController)
+        if ($user->rolesInOrganization($org)->where('slug', 'admin')->exists()) {
+            return;
+        }
+
+        // Editor sees published + own drafts
+        if ($user->rolesInOrganization($org)->where('slug', 'editor')->exists()) {
+            $builder->where(function ($q) use ($user) {
+                $q->where('is_published', true)
+                  ->orWhere('author_id', $user->id);
+            });
+            return;
+        }
+
+        // Default: only published
+        $builder->where('is_published', true);
+    }
+}
+```
+
+## Registering on the Model
+
+```php
+protected static function booted()
+{
+    static::addGlobalScope(new PostScope());
+}
+```
+
+## DON'Ts
+
+- Don't check if the user is ALLOWED to perform an action (that's the Policy's job)
+- Don't modify data — only filter queries
+- Don't throw exceptions for unauthenticated users — return early
+- Don't query the User model inside a UserScope (causes infinite recursion)

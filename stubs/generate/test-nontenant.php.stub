@@ -1,0 +1,19 @@
+<?php
+
+use App\Models\User;
+use App\Models\{{ modelName }};
+use Illuminate\Foundation\Testing\RefreshDatabase;
+
+uses(RefreshDatabase::class);
+
+// ---------------------------------------------------------------
+// Helper: create a user with permissions stored on the user model
+// ---------------------------------------------------------------
+
+function createUserWithPermissions(array $permissions = []): User
+{
+    return User::factory()->create(['permissions' => $permissions]);
+}
+
+{{ roleTests }}
+{{ relationshipTests }}

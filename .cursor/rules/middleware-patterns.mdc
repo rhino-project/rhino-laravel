@@ -1,0 +1,57 @@
+---
+description: Middleware conventions for the laravel-global-controller package
+globs: app/Http/Middleware/**/*.php
+alwaysApply: false
+---
+
+# Middleware Patterns
+
+## Purpose
+
+Middleware handles cross-cutting concerns: logging, rate limiting, response headers, request validation, feature flags, caching headers, etc.
+
+## Assigning to Models
+
+Assign middleware via model properties, NOT in controllers:
+
+```php
+// All CRUD actions
+public static array $middleware = [
+    \App\Http\Middleware\LogAccess::class,
+];
+
+// Specific actions only
+public static array $middlewareActions = [
+    'store'  => [\App\Http\Middleware\ValidatePayload::class],
+    'show'   => [\App\Http\Middleware\AddCacheHeaders::class],
+];
+```
+
+Available action names: `index`, `store`, `show`, `update`, `destroy`.
+
+## Structure
+
+```php
+class LogAccess
+{
+    public function handle(Request $request, Closure $next): Response
+    {
+        // Pre-processing (before controller)
+        Log::info('Accessing: ' . $request->path());
+
+        $response = $next($request);
+
+        // Post-processing (after controller)
+        $response->headers->set('X-Logged', 'true');
+
+        return $response;
+    }
+}
+```
+
+## DON'Ts
+
+- Don't put authorization logic in middleware — use Policies
+- Don't put data filtering in middleware — use Scopes
+- Don't register middleware in controller constructors — use model `$middleware` / `$middlewareActions`
+- Don't combine multiple concerns in one middleware — keep each focused on one task

@@ -1,0 +1,89 @@
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Organization;
+use App\Models\Role;
+use App\Models\User;
+use App\Models\UserRole;
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
+
+class UserRoleSeeder extends Seeder
+{
+    /**
+     * Run the database seeds.
+     */
+    public function run(): void
+    {
+        // Get or create the admin role
+        $adminRole = Role::where('slug', 'admin')->first();
+
+        if (!$adminRole) {
+            $this->command->warn('Admin role not found. Please run RoleSeeder first.');
+            return;
+        }
+
+        // Create two organizations if they don't exist
+        $org1 = Organization::firstOrCreate(
+            ['slug' => 'organization-1'],
+            [
+                'name' => 'Organization 1',
+                'description' => 'First test organization',
+                'is_active' => true,
+            ]
+        );
+
+        $org2 = Organization::firstOrCreate(
+            ['slug' => 'organization-2'],
+            [
+                'name' => 'Organization 2',
+                'description' => 'Second test organization',
+                'is_active' => true,
+            ]
+        );
+
+        // Create user for organization 1
+        $user1 = User::firstOrCreate(
+            ['email' => 'user1@organization1.com'],
+            [
+                'name' => 'User 1',
+                'password' => Hash::make('password'),
+            ]
+        );
+
+        // Create user for organization 2
+        $user2 = User::firstOrCreate(
+            ['email' => 'user2@organization2.com'],
+            [
+                'name' => 'User 2',
+                'password' => Hash::make('password'),
+            ]
+        );
+
+        // Assign admin role to user1 in organization 1 (admin gets wildcard permissions)
+        UserRole::firstOrCreate(
+            [
+                'user_id' => $user1->id,
+                'role_id' => $adminRole->id,
+                'organization_id' => $org1->id,
+            ],
+            [
+                'permissions' => ['*'],
+            ]
+        );
+
+        // Assign admin role to user2 in organization 2 (admin gets wildcard permissions)
+        UserRole::firstOrCreate(
+            [
+                'user_id' => $user2->id,
+                'role_id' => $adminRole->id,
+                'organization_id' => $org2->id,
+            ],
+            [
+                'permissions' => ['*'],
+            ]
+        );
+    }
+}

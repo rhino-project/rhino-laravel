@@ -1,0 +1,33 @@
+<?php
+
+use App\Models\User;
+use App\Models\{{ modelName }};
+use App\Models\Role;
+use App\Models\Organization;
+use App\Models\UserRole;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+
+uses(RefreshDatabase::class);
+
+// ---------------------------------------------------------------
+// Helper: create a user with a specific role and permissions
+// ---------------------------------------------------------------
+
+function createUserWithRole(string $roleSlug, ?Organization $organization = null, array $permissions = []): User
+{
+    $user = User::factory()->create();
+    $org = $organization ?? Organization::factory()->create();
+    $role = Role::where('slug', $roleSlug)->firstOrFail();
+
+    UserRole::create([
+        'user_id' => $user->id,
+        'role_id' => $role->id,
+        'organization_id' => $org->id,
+        'permissions' => $permissions,
+    ]);
+
+    return $user;
+}
+
+{{ roleTests }}
+{{ relationshipTests }}

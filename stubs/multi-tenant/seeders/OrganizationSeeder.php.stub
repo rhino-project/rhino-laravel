@@ -1,0 +1,29 @@
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Organization;
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Str;
+
+class OrganizationSeeder extends Seeder
+{
+    /**
+     * Run the database seeds.
+     */
+    public function run(): void
+    {
+        // Only create if no organizations exist
+        if (Organization::count() === 0) {
+            $name = 'Organization ' . Str::random(8);
+            $slug = Str::slug($name);
+
+            Organization::create([
+                'name' => $name,
+                'slug' => $slug,
+                'description' => 'Default organization',
+                'is_active' => true,
+            ]);
+        }
+    }
+}

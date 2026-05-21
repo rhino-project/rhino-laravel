@@ -1,0 +1,21 @@
+<?php
+
+namespace Tests\Model;
+
+use App\Models\User;
+use App\Models\{{ modelName }};
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
+class {{ modelName }}Test extends TestCase
+{
+    use RefreshDatabase;
+
+    protected function createUserWithPermissions(array $permissions = []): User
+    {
+        return User::factory()->create(['permissions' => $permissions]);
+    }
+
+{{ roleTests }}
+{{ relationshipTests }}
+}

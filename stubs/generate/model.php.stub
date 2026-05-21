@@ -1,0 +1,59 @@
+<?php
+
+namespace App\Models;
+
+use Rhino\Models\RhinoModel;
+// use Rhino\Traits\HasAuditTrail;
+// use Rhino\Traits\HasUuid;
+// use Rhino\Traits\BelongsToOrganization;
+{{ imports }}
+
+class {{ class }} extends RhinoModel
+{
+    // use HasAuditTrail;
+    // use HasUuid;
+    // use BelongsToOrganization;
+
+    protected $fillable = {{ fillable }};
+{{ casts }}
+    // ---------------------------------------------------------------
+    // Validation rules
+    // ---------------------------------------------------------------
+
+    // Format rules for all fields (applied on both store and update).
+    protected $validationRules = {{ validationRules }};
+
+    // ---------------------------------------------------------------
+    // Query Builder configuration (used by Rhino's GlobalController)
+    // ---------------------------------------------------------------
+
+    public static $allowedFilters = {{ allowedFilters }};
+    public static $allowedSorts = {{ allowedSorts }};
+    public static $defaultSort = 'created_at';
+    public static $allowedFields = {{ allowedFields }};
+    public static $allowedIncludes = {{ allowedIncludes }};
+    // public static $allowedSearch = [];
+
+    // ---------------------------------------------------------------
+    // Pagination (uncomment to enable default pagination)
+    // ---------------------------------------------------------------
+    // public static bool $paginationEnabled = false;
+    // protected $perPage = 25;
+
+    // ---------------------------------------------------------------
+    // Middleware (uncomment to add per-model middleware)
+    // ---------------------------------------------------------------
+    // public static array $middleware = [];
+    // public static array $middlewareActions = [];
+
+    // ---------------------------------------------------------------
+    // Exclude actions (uncomment to disable specific CRUD endpoints)
+    // ---------------------------------------------------------------
+    // public static array $exceptActions = [];
+
+    // ---------------------------------------------------------------
+    // Hidden columns (add columns to hide from API responses)
+    // ---------------------------------------------------------------
+    // protected static $additionalHiddenColumns = [];
+{{ organizationScoping }}{{ relationships }}
+}

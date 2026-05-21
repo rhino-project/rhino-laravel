@@ -1,0 +1,117 @@
+<?php
+
+namespace App\Policies;
+
+use App\Models\User;
+use App\Models\{{ modelName }};
+use Rhino\Policies\ResourcePolicy;
+
+/**
+ * Policy for the {{ modelName }} resource.
+ *
+ * Extends Rhino's ResourcePolicy which provides convention-based
+ * CRUD authorization using permission checks (e.g., '{slug}.index').
+ *
+ * Override any method below to add custom authorization logic.
+ * Call parent::{method}($user, ...) to compose with the permission check.
+ */
+class {{ policyName }} extends ResourcePolicy
+{
+    // ---------------------------------------------------------------
+    // CRUD Authorization
+    // ---------------------------------------------------------------
+    // The parent ResourcePolicy checks permissions like '{slug}.index',
+    // '{slug}.store', etc. Override any method for custom logic.
+    // ---------------------------------------------------------------
+
+    // public function viewAny(?\Illuminate\Contracts\Auth\Authenticatable $user): bool
+    // {
+    //     // Example: allow all authenticated users
+    //     return $user !== null;
+    // }
+
+    // public function view(?\Illuminate\Contracts\Auth\Authenticatable $user, $model): bool
+    // {
+    //     // Example: check ownership
+    //     return $user && $user->id === $model->user_id;
+    // }
+
+    // public function create(?\Illuminate\Contracts\Auth\Authenticatable $user): bool
+    // {
+    //     return $user !== null;
+    // }
+
+    // public function update(?\Illuminate\Contracts\Auth\Authenticatable $user, $model): bool
+    // {
+    //     return $user && $user->id === $model->user_id;
+    // }
+
+    // public function delete(?\Illuminate\Contracts\Auth\Authenticatable $user, $model): bool
+    // {
+    //     return $user && $user->id === $model->user_id;
+    // }
+
+    // ---------------------------------------------------------------
+    // Soft Delete Authorization (if model uses SoftDeletes)
+    // ---------------------------------------------------------------
+
+    // public function viewTrashed(?\Illuminate\Contracts\Auth\Authenticatable $user): bool
+    // {
+    //     return parent::viewTrashed($user);
+    // }
+
+    // public function restore(?\Illuminate\Contracts\Auth\Authenticatable $user, $model): bool
+    // {
+    //     return parent::restore($user, $model);
+    // }
+
+    // public function forceDelete(?\Illuminate\Contracts\Auth\Authenticatable $user, $model): bool
+    // {
+    //     return parent::forceDelete($user, $model);
+    // }
+
+    // ---------------------------------------------------------------
+    // Attribute Permissions (override to restrict per-role)
+    // ---------------------------------------------------------------
+
+    // public function permittedAttributesForShow(?\Illuminate\Contracts\Auth\Authenticatable $user): array
+    // {
+    //     // Return ['*'] to allow all (default).
+    //     // Return specific fields to restrict what this user can see.
+    //     // if ($this->hasRole($user, 'admin')) {
+    //     //     return ['*'];
+    //     // }
+    //     // return ['id', 'title', 'status'];
+    //     return ['*'];
+    // }
+
+    // public function hiddenAttributesForShow(?\Illuminate\Contracts\Auth\Authenticatable $user): array
+    // {
+    //     // Return columns to hide from responses (additive with model's $hidden).
+    //     // if ($this->hasRole($user, 'admin')) {
+    //     //     return [];
+    //     // }
+    //     // return ['internal_notes', 'cost_price'];
+    //     return [];
+    // }
+
+    // public function permittedAttributesForCreate(?\Illuminate\Contracts\Auth\Authenticatable $user): array
+    // {
+    //     // Fields the user can send on POST. Non-permitted fields trigger 403.
+    //     // if ($this->hasRole($user, 'admin')) {
+    //     //     return ['*'];
+    //     // }
+    //     // return ['title', 'content'];
+    //     return ['*'];
+    // }
+
+    // public function permittedAttributesForUpdate(?\Illuminate\Contracts\Auth\Authenticatable $user): array
+    // {
+    //     // Fields the user can send on PUT/PATCH. Non-permitted fields trigger 403.
+    //     // if ($this->hasRole($user, 'admin')) {
+    //     //     return ['*'];
+    //     // }
+    //     // return ['title', 'content'];
+    //     return ['*'];
+    // }
+}

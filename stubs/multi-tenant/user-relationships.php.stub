@@ -1,0 +1,19 @@
+    /**
+     * Get the organizations that the user belongs to.
+     */
+    public function organizations()
+    {
+        return $this->belongsToMany(Organization::class, 'user_roles')
+            ->withPivot('role_id')
+            ->withTimestamps();
+    }
+
+    /**
+     * Get the roles for a specific organization.
+     */
+    public function rolesInOrganization(Organization $organization)
+    {
+        return $this->belongsToMany(Role::class, 'user_roles')
+            ->wherePivot('organization_id', $organization->id)
+            ->withTimestamps();
+    }

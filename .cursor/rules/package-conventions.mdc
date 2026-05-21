@@ -1,0 +1,52 @@
+---
+description: Core conventions for the laravel-global-controller package. Authorization architecture, role checking patterns, and foundational DOs/DON'Ts.
+alwaysApply: true
+---
+
+# Package Conventions
+
+## Authorization Architecture
+
+This project uses the `laravel-global-controller` package for automatic CRUD generation. Authorization follows a strict three-layer separation:
+
+| Layer | Responsibility | Based On |
+|-------|---------------|----------|
+| **Policy** | Can this user perform this action? | Roles/permissions ONLY |
+| **Policy (`hiddenColumns`)** | Which columns can this user see? | Roles/permissions ONLY |
+| **Scope** | Which records can this user access? | Roles/permissions ONLY |
+
+- Policies never check ownership or query model data
+- Scopes never authorize — they only filter records
+- Models hold data structure, validation, and query builder config — no authorization
+
+## Role Checking Pattern
+
+Roles are organization-scoped. Always check roles like this:
+
+```php
+$organization = request()->get('organization');
+$user->rolesInOrganization($organization)
+    ->where('slug', 'admin')->exists();
+```
+
+Never hardcode user IDs or role IDs.
+
+## DOs
+
+- Extend `ResourcePolicy` for all policies
+- Use `HasValidation` and `HidableColumns` traits on every model
+- Use `SoftDeletes` on every model
+- Register every model in `config/global-controller.php`
+- Multi-tenant ownership is auto-detected from BelongsTo relationships
+- Assign middleware via model `$middleware` / `$middlewareActions` properties
+- Place custom routes ABOVE `require base_path('routes/global-routes.php')` in `routes/api.php`
+
+## DON'Ts
+
+- Don't put business logic in policies (no ownership checks like `$user->id === $post->user_id`)
+- Don't put data filtering in policies (that belongs in Scopes)
+- Don't put authorization checks in scopes (that belongs in Policies)
+- Don't apply middleware inside controllers — use model properties
+- Don't create routes manually for CRUD — register the model in config
+- Don't skip the policy — every model MUST have a policy
+- Don't edit `routes/global-routes.php` directly — it's a published file

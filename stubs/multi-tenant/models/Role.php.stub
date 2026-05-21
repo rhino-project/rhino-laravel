@@ -1,0 +1,57 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+use Rhino\Traits\HasValidation;
+use Rhino\Traits\HidableColumns;
+
+class Role extends Model
+{
+    use HasFactory, SoftDeletes, HasValidation, HidableColumns;
+
+    protected $fillable = [
+        'name',
+        'slug',
+        'description',
+    ];
+
+    protected $validationRules = [
+        'name' => 'required|string|max:255',
+        'slug' => 'required|string|max:255|unique:roles,slug',
+        'description' => 'nullable|string',
+    ];
+
+    protected $validationRulesStore = ['name', 'slug', 'description'];
+    protected $validationRulesUpdate = ['name', 'slug', 'description'];
+
+    public static $allowedFilters = ['name', 'slug'];
+    public static $allowedSorts = ['name', 'created_at'];
+    public static $defaultSort = 'name';
+    public static $allowedFields = ['id', 'name', 'slug', 'description', 'created_at'];
+    public static $allowedIncludes = ['users', 'organizations'];
+
+    public static $roles = {{ roles }};
+
+    /**
+     * Get the users that have this role.
+     */
+    public function users()
+    {
+        return $this->belongsToMany(User::class, 'user_roles')
+            ->withPivot('organization_id')
+            ->withTimestamps();
+    }
+
+    /**
+     * Get the organizations where this role is used.
+     */
+    public function organizations()
+    {
+        return $this->belongsToMany(Organization::class, 'user_roles')
+            ->withPivot('user_id')
+            ->withTimestamps();
+    }
+}

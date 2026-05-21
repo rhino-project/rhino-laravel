@@ -1,0 +1,413 @@
+# Rhino Blueprint — AI Guide
+
+> This file teaches AI assistants (Claude, ChatGPT, Cursor, etc.) how to generate Rhino Blueprint YAML files for this project. When asked to create a new model/resource, follow this guide.
+
+## What is Rhino Blueprint?
+
+Rhino Blueprint is a **zero-token deterministic code generator**. You define your data model and permission matrix in YAML spec files, then run `php artisan rhino:blueprint` to generate fully working:
+
+- **Model** — with fillable, validation rules, query builder config, traits
+- **Migration** — column definitions, indexes, foreign keys
+- **Factory** — faker definitions per column type
+- **Scope** — auto-discovery scope file
+- **Policy** — **fully working** role-based `permittedAttributesForShow/Create/Update` and `hiddenAttributesForShow` methods
+- **Tests** — CRUD access (200/403), field visibility, forbidden field tests
+- **RoleSeeder** — `Role::firstOrCreate()` for each role
+- **UserRoleSeeder** — sample users with aggregated permissions from all models
+
+No AI tokens are consumed during generation. The YAML spec is the single source of truth.
+
+---
+
+## Directory Structure
+
+```
+project-root/
+  .rhino/
+    blueprints/
+      _roles.yaml              # Global role definitions (required)
+      contracts.yaml           # Model spec + permissions
+      alerts.yaml              # Model spec + permissions
+      ...
+      .blueprint-manifest.json # Auto-generated hash tracking
+    BLUEPRINT.md               # This file (AI guide)
+```
+
+- `_roles.yaml` — prefixed with underscore, always processed first
+- Model files use the **slug** as filename (snake_case, e.g., `blog_posts.yaml`)
+- `.blueprint-manifest.json` — auto-managed, tracks file hashes to skip unchanged specs
+
+---
+
+## How to Generate a Blueprint YAML File
+
+### Questions You MUST Ask the User
+
+Before generating a blueprint YAML file, ask the user these questions:
+
+1. **What is the model name?** (PascalCase singular, e.g., `Contract`, `BlogPost`)
+2. **What columns/fields does it have?** For each column, ask:
+   - Name (snake_case)
+   - Type (see Column Types below)
+   - Is it nullable?
+   - Is it unique?
+   - Should it be filterable/sortable/searchable?
+   - Default value (if any)
+3. **Does it belong to an organization?** (multi-tenant — adds `organization_id` FK)
+4. **Should it use soft deletes?** (default: yes)
+5. **Should it have audit trail?** (change logging)
+6. **What relationships does it have?** (belongsTo, hasMany, hasOne, belongsToMany)
+7. **For each role defined in `_roles.yaml`:**
+   - What CRUD actions can this role perform? (index, show, store, update, destroy, trashed, restore, forceDelete)
+   - Which fields can this role **see** (show_fields)?
+   - Which fields can this role **create** (create_fields)?
+   - Which fields can this role **update** (update_fields)?
+   - Which fields should be **hidden** from this role (hidden_fields)?
+8. **Are there any actions to exclude entirely?** (except_actions — blocks action for ALL roles)
+9. **Should pagination be enabled?** (and how many per page?)
+
+### Before You Generate
+
+- Read `_roles.yaml` to know which roles exist
+- Read existing blueprint files to understand patterns used in this project
+- Use YAML anchors (`&name` / `*name`) to avoid duplicating field lists shared between roles
+
+---
+
+## YAML Format Reference
+
+### `_roles.yaml` — Global Roles
+
+```yaml
+roles:
+  owner:
+    name: Owner
+    description: "Full access. Manages plan, billing, users."
+  admin:
+    name: Admin
+    description: "Operational admin. Manages users, settings."
+  viewer:
+    name: Viewer
+    description: "Read-only access."
+```
+
+**Rules:**
+- Role slugs must be lowercase with underscores only (e.g., `team_lead`)
+- Each role must have a `name`
+- `description` is optional but recommended
+
+### Model Blueprint — Full Example
+
+```yaml
+model: Contract
+slug: contracts          # optional — auto-derived as snake_case plural of model name
+# table: contracts       # optional — defaults to slug
+
+options:
+  belongs_to_organization: true    # adds organization_id FK, scoping
+  soft_deletes: true               # default: true
+  audit_trail: false               # default: false
+  # owner: null                    # for child models: owner: contract
+  # except_actions: []             # actions to block entirely for ALL roles
+  # pagination: false              # default: false
+  # per_page: 25                   # default: 25
+
+columns:
+  # Short syntax — just type:
+  title: string
+
+  # Full syntax — with options:
+  counterparty_cnpj:
+    type: string
+    nullable: true
+
+  total_value:
+    type: decimal
+    nullable: true
+    precision: 10
+    scale: 2
+    sortable: true
+
+  status:
+    type: string
+    nullable: false
+    default: "draft"
+    filterable: true
+    sortable: true
+
+  risk_score:
+    type: integer
+    nullable: true
+    sortable: true
+
+  ai_summary:
+    type: text
+    nullable: true
+
+  tags:
+    type: json
+    nullable: true
+
+  uploaded_by:
+    type: foreignId
+    foreign_model: User
+
+relationships:
+  - type: belongsTo
+    model: User
+    foreign_key: uploaded_by       # optional — inferred from column name
+
+  - type: hasMany
+    model: Alert
+
+permissions:
+  owner:
+    actions: [index, show, store, update, destroy, trashed, restore, forceDelete]
+    show_fields: "*"               # wildcard — all fields
+    create_fields: "*"
+    update_fields: "*"
+
+  admin:
+    actions: [index, show, store, update, destroy, trashed, restore]
+    show_fields: "*"
+    create_fields: &admin_writable   # YAML anchor for reuse
+      - title
+      - status
+      - counterparty_cnpj
+      - total_value
+      - tags
+    update_fields: *admin_writable   # YAML alias — same list
+
+  viewer:
+    actions: [index, show]
+    show_fields:
+      - id
+      - title
+      - status
+      - tags
+    create_fields: []                # empty — cannot create
+    update_fields: []                # empty — cannot update
+    hidden_fields:                   # fields to explicitly hide
+      - counterparty_cnpj
+      - total_value
+      - risk_score
+```
+
+---
+
+## Column Types
+
+| Type | Description | Migration | Faker |
+|------|-------------|-----------|-------|
+| `string` | VARCHAR(255) | `$table->string('name')` | `fake()->sentence(3)` |
+| `text` | TEXT | `$table->text('name')` | `fake()->paragraph()` |
+| `integer` | INT | `$table->integer('name')` | `fake()->numberBetween(1, 100)` |
+| `bigInteger` | BIGINT | `$table->bigInteger('name')` | `fake()->numberBetween(1, 10000)` |
+| `boolean` | BOOL | `$table->boolean('name')` | `fake()->boolean()` |
+| `date` | DATE | `$table->date('name')` | `fake()->date()` |
+| `datetime` | DATETIME | `$table->datetime('name')` | `fake()->dateTime()` |
+| `timestamp` | TIMESTAMP | `$table->timestamp('name')` | `fake()->dateTime()` |
+| `decimal` | DECIMAL(p,s) | `$table->decimal('name', p, s)` | `fake()->randomFloat(2, 0, 1000)` |
+| `float` | FLOAT | `$table->float('name')` | `fake()->randomFloat(2, 0, 1000)` |
+| `json` | JSON | `$table->json('name')` | `[]` |
+| `uuid` | UUID | `$table->uuid('name')` | `fake()->uuid()` |
+| `foreignId` | BIGINT + FK | `$table->foreignId('name')->constrained()` | `Model::factory()` |
+
+### Column Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `type` | string | `string` | Column type (see above) |
+| `nullable` | bool | `false` | Allow NULL values |
+| `unique` | bool | `false` | Add unique constraint |
+| `index` | bool | `false` | Add database index |
+| `default` | mixed | `null` | Default value |
+| `filterable` | bool | `false` | Allow filtering in API queries |
+| `sortable` | bool | `false` | Allow sorting in API queries |
+| `searchable` | bool | `false` | Include in full-text search |
+| `precision` | int | `8` | Decimal precision (decimal type only) |
+| `scale` | int | `2` | Decimal scale (decimal type only) |
+| `foreign_model` | string | `null` | Related model name (foreignId type only) |
+
+---
+
+## Permission Surfaces
+
+Each role defines 4 permission surfaces:
+
+| Surface | Purpose | Wildcard | Empty |
+|---------|---------|----------|-------|
+| `show_fields` | Fields returned in API responses | `"*"` = all fields | N/A (at least `id`) |
+| `create_fields` | Fields allowed in POST requests | `"*"` = all fields | `[]` = cannot create |
+| `update_fields` | Fields allowed in PUT/PATCH requests | `"*"` = all fields | `[]` = cannot update |
+| `hidden_fields` | Fields explicitly removed from responses | N/A | `[]` = nothing hidden |
+
+### How Permissions Generate Policy Code
+
+```yaml
+# This YAML:
+analyst:
+  actions: [index, show, store, update]
+  show_fields: [id, title, status, tags]
+  create_fields: [title, tags]
+  update_fields: [title, tags]
+  hidden_fields: [total_value, risk_score]
+```
+
+Generates this policy code:
+
+```php
+public function permittedAttributesForShow(?Authenticatable $user): array
+{
+    // ... other roles ...
+    if ($this->hasRole($user, 'analyst')) {
+        return ['id', 'title', 'status', 'tags'];
+    }
+    return [];
+}
+
+public function hiddenAttributesForShow(?Authenticatable $user): array
+{
+    if ($this->hasRole($user, 'analyst')) {
+        return ['total_value', 'risk_score'];
+    }
+    return [];
+}
+
+public function permittedAttributesForCreate(?Authenticatable $user): array
+{
+    // ... other roles ...
+    if ($this->hasRole($user, 'analyst')) {
+        return ['title', 'tags'];
+    }
+    return [];
+}
+```
+
+**Key: Roles with identical field sets are grouped** (e.g., `admin || manager`) to keep generated code clean.
+
+---
+
+## YAML Anchors — DRY Pattern
+
+Use YAML anchors to avoid duplicating field lists:
+
+```yaml
+permissions:
+  admin:
+    actions: [index, show, store, update, destroy]
+    create_fields: &admin_writable     # Define anchor
+      - title
+      - status
+      - description
+      - category
+    update_fields: *admin_writable     # Reference anchor
+
+  manager:
+    actions: [index, show, store, update]
+    create_fields: *admin_writable     # Same list as admin
+    update_fields: *admin_writable
+```
+
+---
+
+## Common Patterns
+
+### Read-Only Model (no create/update/delete)
+
+```yaml
+options:
+  except_actions: [store, update, destroy]
+
+permissions:
+  admin:
+    actions: [index, show]
+    show_fields: "*"
+    create_fields: []
+    update_fields: []
+  viewer:
+    actions: [index, show]
+    show_fields: [id, title, status]
+    create_fields: []
+    update_fields: []
+```
+
+### Child Model (belongs to a parent, not organization)
+
+```yaml
+model: Comment
+options:
+  belongs_to_organization: false
+  owner: post                        # scoped under Post model
+
+columns:
+  body: text
+  post_id:
+    type: foreignId
+    foreign_model: Post
+```
+
+### Internal Model (no API endpoints)
+
+If a model should not have API endpoints, don't create a blueprint file for it. Blueprints are only for API-exposed resources.
+
+---
+
+## Running the Generator
+
+```bash
+# Generate all models from blueprints
+php artisan rhino:blueprint
+
+# Process single model
+php artisan rhino:blueprint --model=contracts
+
+# Preview without writing files
+php artisan rhino:blueprint --dry-run
+
+# Force regeneration (ignore cached hashes)
+php artisan rhino:blueprint --force
+
+# Skip specific artifacts
+php artisan rhino:blueprint --skip-tests
+php artisan rhino:blueprint --skip-seeders
+
+# Custom blueprint directory
+php artisan rhino:blueprint --dir=.rhino/blueprints
+```
+
+### Re-running After Changes
+
+The generator uses SHA-256 hashes to track changes. If a YAML file hasn't changed since last generation, it's skipped automatically. Use `--force` to bypass this.
+
+**Important:** The generator will **overwrite** previously generated files. If you've manually edited a generated file, your changes will be lost on re-generation. Keep your changes in the YAML spec.
+
+---
+
+## Valid Actions
+
+| Action | HTTP Method | Route | Description |
+|--------|-------------|-------|-------------|
+| `index` | GET | `/{slug}` | List all records |
+| `show` | GET | `/{slug}/{id}` | Show single record |
+| `store` | POST | `/{slug}` | Create new record |
+| `update` | PUT/PATCH | `/{slug}/{id}` | Update record |
+| `destroy` | DELETE | `/{slug}/{id}` | Soft delete record |
+| `trashed` | GET | `/{slug}/trashed` | List soft-deleted |
+| `restore` | POST | `/{slug}/{id}/restore` | Restore soft-deleted |
+| `forceDelete` | DELETE | `/{slug}/{id}/force` | Permanently delete |
+
+---
+
+## Tips for AI Assistants
+
+1. **Always read `_roles.yaml` first** to know available roles
+2. **Ask about field visibility per role** — this is the most important part
+3. **Use anchors** when 2+ roles share the same field list
+4. **Owner role usually gets `"*"` wildcard** for all surfaces
+5. **Viewer role usually gets `[]` for create/update** (read-only)
+6. **Don't include `id`, `created_at`, `updated_at`** in columns — they're auto-generated
+7. **Don't include `organization_id`** in columns — set `belongs_to_organization: true` instead
+8. **Fields in `hidden_fields` are explicitly removed** even if they'd be in `show_fields: "*"`
+9. **Validate your YAML** — the generator will reject invalid specs with clear error messages
+10. **One file per model** — don't combine multiple models in one file

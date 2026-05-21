@@ -1,0 +1,97 @@
+---
+description: Testing conventions for the laravel-global-controller package
+globs: tests/**/*.php
+alwaysApply: false
+---
+
+# Test Patterns
+
+## What to Test
+
+For each model, create tests covering:
+
+1. **Policy tests** — Test each role can/cannot perform each CRUD action
+2. **Scope tests** — Test each role sees the correct records
+3. **Hidden column tests** — Test each role sees the correct columns in the JSON response
+4. **Middleware tests** — Test middleware executes correctly (headers, logs, etc.)
+5. **CRUD integration tests** — Test full endpoint lifecycle with authentication
+
+## Role Testing
+
+MUST test every role defined in the app separately. Test both allow and deny:
+
+```php
+public function test_admin_can_delete_post()
+{
+    $user = $this->createUserWithRole('admin');
+    $post = Post::factory()->create();
+
+    $this->actingAs($user, 'sanctum')
+        ->deleteJson("/api/{$org->slug}/posts/{$post->id}")
+        ->assertStatus(204);
+}
+
+public function test_viewer_cannot_delete_post()
+{
+    $user = $this->createUserWithRole('viewer');
+    $post = Post::factory()->create();
+
+    $this->actingAs($user, 'sanctum')
+        ->deleteJson("/api/{$org->slug}/posts/{$post->id}")
+        ->assertStatus(403);
+}
+```
+
+## Column Visibility Testing
+
+Assert that hidden columns are NOT present in the response:
+
+```php
+public function test_viewer_cannot_see_cost_price()
+{
+    $user = $this->createUserWithRole('viewer');
+
+    $response = $this->actingAs($user, 'sanctum')
+        ->getJson("/api/{$org->slug}/products");
+
+    $response->assertJsonMissing(['cost_price']);
+}
+
+public function test_admin_can_see_cost_price()
+{
+    $user = $this->createUserWithRole('admin');
+
+    $response = $this->actingAs($user, 'sanctum')
+        ->getJson("/api/{$org->slug}/products");
+
+    $response->assertJsonFragment(['cost_price' => $product->cost_price]);
+}
+```
+
+## Scope Testing
+
+Verify data filtering per role:
+
+```php
+public function test_editor_sees_published_and_own_drafts()
+{
+    $editor = $this->createUserWithRole('editor');
+    $publishedPost = Post::factory()->create(['is_published' => true]);
+    $editorDraft = Post::factory()->create(['author_id' => $editor->id, 'is_published' => false]);
+    $otherDraft = Post::factory()->create(['is_published' => false]);
+
+    $response = $this->actingAs($editor, 'sanctum')
+        ->getJson("/api/{$org->slug}/posts");
+
+    $ids = collect($response->json())->pluck('id');
+    $this->assertTrue($ids->contains($publishedPost->id));
+    $this->assertTrue($ids->contains($editorDraft->id));
+    $this->assertFalse($ids->contains($otherDraft->id));
+}
+```
+
+## DON'Ts
+
+- Don't skip testing policy denials (test that restricted roles get 403)
+- Don't skip testing unauthenticated access (test that 401 is returned)
+- Don't test only the happy path — test each role's boundaries

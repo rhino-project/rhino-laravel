@@ -1,0 +1,77 @@
+---
+description: Model structure conventions for the laravel-global-controller package
+globs: app/Models/**/*.php
+alwaysApply: false
+---
+
+# Model Patterns
+
+## Required Traits
+
+Every model MUST use these traits:
+
+```php
+use HasFactory, SoftDeletes, HasValidation, HidableColumns;
+```
+
+For models with a direct `organization_id` column, also add `BelongsToOrganization`.
+
+## Required Properties
+
+```php
+// Mass assignment
+protected $fillable = ['field1', 'field2'];
+
+// Validation rules (full definitions)
+protected $validationRules = [
+    'field1' => 'required|string|max:255',
+    'field2' => 'nullable|string',
+];
+
+// Fields validated on store
+protected $validationRulesStore = ['field1', 'field2'];
+
+// Fields validated on update
+protected $validationRulesUpdate = ['field1', 'field2'];
+
+// Query Builder configuration
+public static $allowedFilters = ['field1'];
+public static $allowedSorts = ['field1', 'created_at'];
+public static $defaultSort = 'created_at';
+public static $allowedFields = ['id', 'field1', 'field2', 'created_at'];
+public static $allowedIncludes = ['relationship'];
+```
+
+## Multi-Tenant Ownership
+
+Rhino auto-detects the ownership path to Organization by introspecting BelongsTo relationships.
+
+```php
+// Direct: model has organization_id
+use BelongsToOrganization; // trait handles it
+
+// Indirect: auto-detected from BelongsTo relationships.
+// Post -> Blog -> Organization is resolved automatically.
+```
+
+## Optional Route Properties
+
+```php
+// Middleware applied to all CRUD actions
+public static array $middleware = [\App\Http\Middleware\LogAccess::class];
+
+// Middleware applied to specific actions
+public static array $middlewareActions = [
+    'store' => [\App\Http\Middleware\ValidatePayload::class],
+];
+
+// Disable specific CRUD actions
+public static array $exceptActions = ['destroy'];
+```
+
+## DON'Ts
+
+- Don't put authorization logic in the model
+- Don't define inline query scopes for authorization — create separate Scope classes in `app/Models/Scopes/`
+- Don't add `organization_id` to `$fillable` without using the `BelongsToOrganization` trait
+- Don't skip validation rules — every fillable field should have a rule

@@ -1,0 +1,93 @@
+---
+description: Policy conventions for the laravel-global-controller package. Role-based authorization and column hiding patterns.
+globs: app/Policies/**/*.php
+alwaysApply: false
+---
+
+# Policy Patterns
+
+## Core Rule
+
+Policies check roles/permissions ONLY. Never check ownership or query model data.
+
+## Structure
+
+Every policy MUST:
+1. Extend `ResourcePolicy`
+2. Implement all 5 CRUD methods: `viewAny`, `view`, `create`, `update`, `delete`
+3. Override `hiddenColumns()` if the model has sensitive fields
+4. Check roles via `rolesInOrganization()`
+
+## Good Example
+
+```php
+use Startsoft\Rhino\Laravel-Api\Policies\ResourcePolicy;
+use Illuminate\Contracts\Auth\Authenticatable;
+
+class PostPolicy extends ResourcePolicy
+{
+    public function hiddenColumns(?Authenticatable $user): array
+    {
+        if (!$user) return ['cost_price', 'margin', 'internal_notes'];
+        $org = request()->get('organization');
+        if ($user->rolesInOrganization($org)->where('slug', 'admin')->exists()) return [];
+        return ['cost_price', 'margin'];
+    }
+
+    public function viewAny(User $user): bool
+    {
+        $org = request()->get('organization');
+        return $user->rolesInOrganization($org)->exists();
+    }
+
+    public function create(User $user): bool
+    {
+        $org = request()->get('organization');
+        return $user->rolesInOrganization($org)
+            ->whereIn('slug', ['admin', 'editor'])->exists();
+    }
+
+    public function update(User $user, Post $post): bool
+    {
+        $org = request()->get('organization');
+        return $user->rolesInOrganization($org)
+            ->whereIn('slug', ['admin', 'editor'])->exists();
+    }
+
+    public function delete(User $user, Post $post): bool
+    {
+        $org = request()->get('organization');
+        return $user->rolesInOrganization($org)
+            ->where('slug', 'admin')->exists();
+    }
+}
+```
+
+## Bad Examples
+
+```php
+// BAD: checking ownership — this belongs in a Scope
+public function update(User $user, Post $post): bool
+{
+    return $user->id === $post->user_id;
+}
+
+// BAD: querying related data — this belongs in a Scope
+public function view(User $user, Post $post): bool
+{
+    return $post->blog->organization_id === $user->current_org_id;
+}
+
+// BAD: business logic in hiddenColumns
+public function hiddenColumns(?Authenticatable $user): array
+{
+    return $this->model->is_draft ? ['content'] : [];
+}
+```
+
+## DON'Ts
+
+- Don't check ownership (`$user->id === $model->user_id`) — that belongs in a Scope
+- Don't query model data for authorization decisions
+- Don't put business logic in `hiddenColumns()`
+- Don't forget to get the organization from `request()->get('organization')`

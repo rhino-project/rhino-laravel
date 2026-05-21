@@ -1,0 +1,50 @@
+---
+description: Route conventions for the laravel-global-controller package
+globs: routes/**/*.php
+alwaysApply: false
+---
+
+# Route Patterns
+
+## Auto-Generated CRUD Routes
+
+CRUD routes are auto-generated from `config/global-controller.php`. Do NOT create them manually. Register the model in config and the routes are created automatically:
+
+```
+GET    /api/{org}/{model}       → {model}.index
+POST   /api/{org}/{model}       → {model}.store
+GET    /api/{org}/{model}/{id}  → {model}.show
+PUT    /api/{org}/{model}/{id}  → {model}.update
+DELETE /api/{org}/{model}/{id}  → {model}.destroy
+```
+
+All routes are visible via `php artisan route:list`.
+
+## Custom Route Overrides
+
+To override a specific CRUD action:
+
+1. Add the action to `$exceptActions` on the model:
+
+```php
+public static array $exceptActions = ['index'];
+```
+
+2. Define your custom route in `routes/api.php` ABOVE the require line:
+
+```php
+// Custom override — registered first, takes priority
+Route::get('{organization}/posts', [PostController::class, 'index'])
+    ->middleware(['auth:sanctum'])
+    ->name('posts.index');
+
+// Auto-generated routes (posts.index is excluded, no conflict)
+require base_path('routes/global-routes.php');
+```
+
+## DON'Ts
+
+- Don't edit `routes/global-routes.php` directly — it's a published file and may be overwritten on package update
+- Don't create manual CRUD routes for models — register them in `config/global-controller.php` instead
+- Don't duplicate route names that the auto-generator already creates
+- Don't place custom routes BELOW the require line — they won't take priority

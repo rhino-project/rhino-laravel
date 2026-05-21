@@ -1,0 +1,65 @@
+name: Release to Packagist
+
+on:
+  push:
+    branches:
+      - 'release/v*'
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    name: Run tests
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, sqlite3
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Run tests
+        run: vendor/bin/phpunit
+
+  release:
+    needs: tests
+    runs-on: ubuntu-latest
+    name: Create release and publish
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from branch name
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#release/}"
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing version: $VERSION"
+
+      - name: Create tag
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+
+      - name: Notify Packagist
+        run: |
+          curl -XPOST \
+            -H 'Content-Type: application/json' \
+            "https://packagist.org/api/update-package?username=${{ secrets.PACKAGIST_USERNAME }}&apiToken=${{ secrets.PACKAGIST_TOKEN }}" \
+            -d '{"repository":{"url":"https://github.com/${{ github.repository }}"}}'

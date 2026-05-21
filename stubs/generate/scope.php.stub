@@ -1,0 +1,62 @@
+<?php
+
+namespace App\Models\Scopes;
+
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Scope;
+
+/**
+ * Scope for the {{ modelName }} model.
+ *
+ * ScopedDB automatically discovers scopes from app/Models/Scopes/.
+ * The naming convention is {ModelName}Scope.php.
+ *
+ * This scope is applied when using ScopedDB::table('{{ tableName }}')
+ * to ensure data isolation based on the authenticated user.
+ */
+class {{ scopeName }} implements Scope
+{
+    /**
+     * Apply the scope to a given Eloquent query builder.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder|\Illuminate\Database\Query\Builder  $builder
+     * @param  \Illuminate\Database\Eloquent\Model  $model
+     * @return void
+     */
+    public function apply($builder, $model): void
+    {
+        // ---------------------------------------------------------------
+        // Example: Filter by authenticated user (Sanctum)
+        // ---------------------------------------------------------------
+        // $user = auth('sanctum')->user();
+        // if ($user) {
+        //     $builder->where('user_id', $user->id);
+        // }
+
+        // ---------------------------------------------------------------
+        // Example: Role-based filtering (check user role via Sanctum)
+        // ---------------------------------------------------------------
+        // $user = auth('sanctum')->user();
+        // if ($user) {
+        //     $organization = request()->get('organization');
+        //     $roleSlug = $user->getRoleSlugForValidation($organization);
+        //
+        //     // Admins see everything, other roles see only active records
+        //     if ($roleSlug !== 'admin') {
+        //         $builder->where('is_active', true);
+        //     }
+        // }
+
+        // ---------------------------------------------------------------
+        // Example: Token ability check (Sanctum token abilities)
+        // ---------------------------------------------------------------
+        // $user = auth('sanctum')->user();
+        // if ($user && $user->currentAccessToken()) {
+        //     if (!$user->tokenCan('{{ tableName }}:read-all')) {
+        //         // Token doesn't have full read access, restrict to own records
+        //         $builder->where('user_id', $user->id);
+        //     }
+        // }
+    }
+}
