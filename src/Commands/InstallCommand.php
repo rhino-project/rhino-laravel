@@ -319,6 +319,11 @@ class InstallCommand extends Command
             $this->stubPath . '/policies/RolePolicy.php.stub',
             $policiesPath . '/RolePolicy.php'
         );
+
+        File::copy(
+            $this->stubPath . '/policies/UserPolicy.php.stub',
+            $policiesPath . '/UserPolicy.php'
+        );
     }
 
     protected function updateRoutes(): void

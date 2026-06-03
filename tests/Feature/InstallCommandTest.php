@@ -300,9 +300,18 @@ class InstallCommandTest extends TestCase
 
         $this->assertFileExists($policiesDir . '/OrganizationPolicy.php');
         $this->assertFileExists($policiesDir . '/RolePolicy.php');
+        $this->assertFileExists($policiesDir . '/UserPolicy.php');
 
         // Verify content is not empty
         $this->assertNotEmpty(File::get($policiesDir . '/OrganizationPolicy.php'));
         $this->assertNotEmpty(File::get($policiesDir . '/RolePolicy.php'));
+        $this->assertNotEmpty(File::get($policiesDir . '/UserPolicy.php'));
+
+        // UserPolicy must declare the 'users' slug so include-authorization
+        // (?include=assignee/author/owner pointing at User) can resolve.
+        $this->assertStringContainsString(
+            "\$resourceSlug = 'users'",
+            File::get($policiesDir . '/UserPolicy.php')
+        );
     }
 }

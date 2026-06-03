@@ -1,0 +1,24 @@
+<?php
+
+namespace App\Policies;
+
+use App\Models\User;
+use Rhino\Policies\ResourcePolicy;
+
+/**
+ * Policy for the User model.
+ *
+ * Required for Rhino's per-include authorization: when a resource exposes a
+ * User relation (e.g. ?include=assignee on Task, ?include=author on Comment,
+ * ?include=owner on Project), Rhino checks Gate::viewAny on User. Without a
+ * concrete UserPolicy mapped to the 'users' slug, the permission resolver
+ * cannot derive the slug and the include is denied — even for roles that
+ * have 'users.index' / 'users.show' granted.
+ *
+ * Customize the role/permission logic in ResourcePolicy by setting the
+ * appropriate permissions on each role's user_roles.permissions array.
+ */
+class UserPolicy extends ResourcePolicy
+{
+    protected ?string $resourceSlug = 'users';
+}

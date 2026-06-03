@@ -722,6 +722,7 @@ PHP;
 
         $this->assertFileExists($policiesDir . '/OrganizationPolicy.php');
         $this->assertFileExists($policiesDir . '/RolePolicy.php');
+        $this->assertFileExists($policiesDir . '/UserPolicy.php');
     }
 
     // ------------------------------------------------------------------
@@ -1272,6 +1273,7 @@ PHP;
         // Verify policies were created
         $this->assertFileExists($policiesDir . '/OrganizationPolicy.php');
         $this->assertFileExists($policiesDir . '/RolePolicy.php');
+        $this->assertFileExists($policiesDir . '/UserPolicy.php');
 
         // Verify middleware was created
         $this->assertFileExists($middlewareDir . '/ResolveOrganizationFromRoute.php');
@@ -1416,6 +1418,7 @@ PHP;
 
         $this->assertFileExists($policiesDir . '/OrganizationPolicy.php');
         $this->assertFileExists($policiesDir . '/RolePolicy.php');
+        $this->assertFileExists($policiesDir . '/UserPolicy.php');
     }
 
     // ------------------------------------------------------------------

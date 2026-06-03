@@ -237,6 +237,77 @@ class IncludePostPolicyDenyUser2
 // Tests
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// Differently-named-relation fixtures: `Article.author()` returns a User-typed
+// model (`IncludeAuthor`). Validates that include-authorization gates on the
+// related MODEL class, not on the relation name.
+// --------------------------------------------------------------------------
+
+class IncludeAuthor extends Model
+{
+    use HasValidation, HidableColumns;
+
+    protected $table = 'include_authors';
+
+    protected $fillable = ['name'];
+
+    protected $validationRules = ['name' => 'string|max:255'];
+    protected $validationRulesStore = ['name'];
+    protected $validationRulesUpdate = ['name'];
+}
+
+class IncludeArticle extends Model
+{
+    use HasValidation, HidableColumns;
+
+    protected $table = 'include_articles';
+
+    protected $fillable = ['author_id', 'title'];
+
+    protected $validationRules = ['title' => 'string|max:255'];
+    protected $validationRulesStore = ['title'];
+    protected $validationRulesUpdate = ['title'];
+
+    public static $allowedIncludes = ['author'];
+
+    /** Relation name 'author' deliberately differs from related model `IncludeAuthor`. */
+    public function author()
+    {
+        return $this->belongsTo(IncludeAuthor::class, 'author_id');
+    }
+}
+
+class IncludeArticlePolicy
+{
+    public function viewAny(?Authenticatable $user): bool { return true; }
+    public function view(?Authenticatable $user, $model): bool { return true; }
+    public function create(?Authenticatable $user): bool { return true; }
+    public function update(?Authenticatable $user, $model): bool { return true; }
+    public function delete(?Authenticatable $user, $model): bool { return true; }
+}
+
+class IncludeAuthorPolicyAllow
+{
+    public function viewAny(?Authenticatable $user): bool { return true; }
+    public function view(?Authenticatable $user, $model): bool { return true; }
+}
+
+class IncludeAuthorPolicyDeny
+{
+    public function viewAny(?Authenticatable $user): bool { return false; }
+    public function view(?Authenticatable $user, $model): bool { return false; }
+}
+
+/**
+ * Concrete ResourcePolicy subclass used to validate slug resolution for a
+ * model whose relation name differs from its slug.
+ */
+class IncludeAuthorResourcePolicy extends \Rhino\Policies\ResourcePolicy
+{
+    // Slug is intentionally NOT set explicitly here; it must be resolved
+    // via class match against config('rhino.models').
+}
+
 class IncludeAuthorizationTest extends TestCase
 {
     protected function setUp(): void
@@ -260,6 +331,19 @@ class IncludeAuthorizationTest extends TestCase
             $table->id();
             $table->unsignedBigInteger('post_id');
             $table->string('body')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('include_authors', function (Blueprint $table) {
+            $table->id();
+            $table->string('name');
+            $table->timestamps();
+        });
+
+        Schema::create('include_articles', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('author_id')->nullable();
+            $table->string('title');
             $table->timestamps();
         });
 
@@ -564,5 +648,111 @@ class IncludeAuthorizationTest extends TestCase
 
         $response->assertStatus(403);
         $response->assertJson(['message' => 'You do not have permission to include postsCount.']);
+    }
+
+    // ----------------------------------------------------------------------
+    // Differently-named relation: `Article.author()` -> User-typed model.
+    // ----------------------------------------------------------------------
+
+    public function test_include_with_differently_named_relation_resolves_via_related_model_policy(): void
+    {
+        // The relation is `author`; the related model is `IncludeAuthor`. The
+        // Gate must be asked viewAny on IncludeAuthor, not on anything derived
+        // from the relation name.
+        $this->registerRoutes([
+            'articles' => IncludeArticle::class,
+            'authors' => IncludeAuthor::class,
+        ]);
+        Gate::policy(IncludeArticle::class, IncludeArticlePolicy::class);
+        Gate::policy(IncludeAuthor::class, IncludeAuthorPolicyAllow::class);
+        $this->authenticateAs(2);
+
+        $author = IncludeAuthor::forceCreate(['name' => 'Jane']);
+        IncludeArticle::forceCreate(['author_id' => $author->id, 'title' => 'Article 1']);
+
+        $response = $this->call('GET', '/api/articles', ['include' => 'author'], [], [], [
+            'HTTP_ACCEPT' => 'application/json',
+        ]);
+
+        // 200 confirms include-auth resolved via IncludeAuthor's policy (not via
+        // the relation name 'author'). Spatie attaches the relation when
+        // include= is present and authorized.
+        $response->assertStatus(200);
+        $data = $response->json();
+        $this->assertIsArray($data);
+        $this->assertNotEmpty($data);
+    }
+
+    public function test_include_with_differently_named_relation_denied_when_related_model_policy_denies(): void
+    {
+        // Sanity check: when the related model's policy denies viewAny, the
+        // include is rejected — proving the gate happens on the related MODEL,
+        // not on a fictitious permission derived from the relation name 'author'.
+        $this->registerRoutes([
+            'articles' => IncludeArticle::class,
+            'authors' => IncludeAuthor::class,
+        ]);
+        Gate::policy(IncludeArticle::class, IncludeArticlePolicy::class);
+        Gate::policy(IncludeAuthor::class, IncludeAuthorPolicyDeny::class);
+        $this->authenticateAs(2);
+
+        $author = IncludeAuthor::forceCreate(['name' => 'Jane']);
+        IncludeArticle::forceCreate(['author_id' => $author->id, 'title' => 'Article 1']);
+
+        $response = $this->call('GET', '/api/articles', ['include' => 'author'], [], [], [
+            'HTTP_ACCEPT' => 'application/json',
+        ]);
+
+        $response->assertStatus(403);
+        $response->assertJson(['message' => 'You do not have permission to include author.']);
+    }
+
+    public function test_resource_policy_slug_resolves_via_class_match_in_rhino_models_config(): void
+    {
+        // Regression test for the UserPolicy install gap: a model registered
+        // in config('rhino.models') only resolves its slug if there's a
+        // concrete policy class mapped via Gate::policy whose class matches
+        // the running policy. Without a concrete UserPolicy mapping the User
+        // model, ResourcePolicy::resolveResourceSlug returns null and
+        // permission checks deny — even when 'users.index' is granted.
+        Gate::policy(IncludeAuthor::class, IncludeAuthorResourcePolicy::class);
+        config(['rhino.models' => [
+            'authors' => IncludeAuthor::class,
+            'articles' => IncludeArticle::class,
+        ]]);
+
+        $policy = new IncludeAuthorResourcePolicy();
+        $ref = new \ReflectionMethod($policy, 'resolveResourceSlug');
+        $ref->setAccessible(true);
+
+        $this->assertSame(
+            'authors',
+            $ref->invoke($policy),
+            'ResourcePolicy must resolve its slug from config(\'rhino.models\') by ' .
+            'matching the registered policy class to its own class.'
+        );
+    }
+
+    public function test_resource_policy_slug_resolves_to_null_when_no_concrete_policy_is_mapped(): void
+    {
+        // Inverse of the above: without Gate::policy(...) mapping the model
+        // to a concrete policy class, slug resolution returns null. This is
+        // why ?include=assignee 403's in apps that register `users` in config
+        // but never publish a UserPolicy.
+        config(['rhino.models' => [
+            'authors' => IncludeAuthor::class,
+            'articles' => IncludeArticle::class,
+        ]]);
+        // Intentionally NOT calling Gate::policy() for IncludeAuthor.
+
+        $policy = new IncludeAuthorResourcePolicy();
+        $ref = new \ReflectionMethod($policy, 'resolveResourceSlug');
+        $ref->setAccessible(true);
+
+        $this->assertNull(
+            $ref->invoke($policy),
+            'Without a concrete Gate::policy mapping, slug resolution must ' .
+            'return null (so checkPermission denies by default).'
+        );
     }
 }
