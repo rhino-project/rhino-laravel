@@ -33,7 +33,7 @@ class User extends Authenticatable implements HasRoleBasedValidation
     public function organizations()
     {
         return $this->belongsToMany(Organization::class, 'user_roles')
-            ->withPivot('role_id')
+            ->withPivot('role_id', 'route_group')
             ->withTimestamps();
     }
 

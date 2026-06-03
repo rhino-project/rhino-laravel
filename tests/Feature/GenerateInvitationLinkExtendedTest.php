@@ -19,6 +19,7 @@ class GenerateInvitationLinkExtendedTest extends TestCase
             $table->id();
             $table->foreignId('organization_id')->constrained()->onDelete('cascade');
             $table->string('email')->index();
+            $table->string('route_group')->nullable();
             $table->foreignId('role_id')->constrained()->onDelete('cascade');
             $table->string('token', 64)->unique()->index();
             $table->foreignId('invited_by')->constrained('users')->onDelete('cascade');

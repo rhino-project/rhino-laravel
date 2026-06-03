@@ -10,6 +10,7 @@ class UserRole extends Model
         'user_id',
         'role_id',
         'organization_id',
+        'route_group',
         'permissions',
     ];
 

@@ -18,7 +18,7 @@ class Organization extends Model
     public function users()
     {
         return $this->belongsToMany(User::class, 'user_roles')
-            ->withPivot('role_id')
+            ->withPivot('role_id', 'route_group')
             ->withTimestamps();
     }
 }

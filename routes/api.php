@@ -4,20 +4,7 @@ use Illuminate\Support\Facades\Route;
 use Rhino\Controllers\AuthController;
 use Rhino\Controllers\GlobalController;
 use Rhino\Controllers\InvitationController;
-
-/*
-|--------------------------------------------------------------------------
-| Auth Routes
-|--------------------------------------------------------------------------
-*/
-
-Route::prefix('auth')->group(function () {
-    Route::post('login', [AuthController::class, 'login']);
-    Route::post('password/recover', [AuthController::class, 'recoverPassword']);
-    Route::post('password/reset', [AuthController::class, 'reset']);
-    Route::post('register', [AuthController::class, 'registerWithInvitation']);
-    Route::post('logout', [AuthController::class, 'logout'])->middleware('auth:sanctum');
-});
+use Rhino\Http\Middleware\EnforceGroupMembership;
 
 /*
 |--------------------------------------------------------------------------
@@ -87,6 +74,61 @@ $rhinoRegistrar = function (?string $domain, string $prefix) use ($rhinoDomainPa
 
     return $registrar;
 };
+
+// Group-aware auth routes (Decision 9.A): for each group with `auth: true`,
+// register the full auth route set under the group's prefix/domain, tagged with
+// the group's route_group default. The legacy unprefixed /auth/* set above stays
+// for the default/no-group case. The 'public' group is never auth-enabled.
+$enforceMembership = (bool) (config('rhino.auth.enforce_group_membership', false));
+
+foreach ($routeGroups as $groupKey => $groupConfig) {
+    if ($groupKey === 'public' || empty($groupConfig['auth'])) {
+        continue;
+    }
+
+    $authGroupPrefix = $groupConfig['prefix'] ?? '';
+    $authGroupDomain = $groupConfig['domain'] ?? null;
+    $authGroupMiddleware = $groupConfig['middleware'] ?? [];
+
+    $authPrefix = $authGroupPrefix ? "{$authGroupPrefix}/auth" : 'auth';
+
+    $rhinoRegistrar($authGroupDomain, $authPrefix)
+        ->middleware($authGroupMiddleware)
+        ->group(function () use ($groupKey, $authGroupMiddleware) {
+            Route::post('login', [AuthController::class, 'login'])
+                ->defaults('route_group', $groupKey);
+            Route::post('password/recover', [AuthController::class, 'recoverPassword'])
+                ->defaults('route_group', $groupKey);
+            Route::post('password/reset', [AuthController::class, 'reset'])
+                ->defaults('route_group', $groupKey);
+            Route::post('register', [AuthController::class, 'registerWithInvitation'])
+                ->defaults('route_group', $groupKey);
+            Route::post('logout', [AuthController::class, 'logout'])
+                ->defaults('route_group', $groupKey)
+                ->middleware('auth:sanctum');
+        });
+}
+
+/*
+|--------------------------------------------------------------------------
+| Legacy Auth Routes (default / no-group)
+|--------------------------------------------------------------------------
+|
+| The legacy unprefixed /auth/* set maps to the default/no-group case and has
+| NO host constraint, so it would match on any host. It is registered AFTER the
+| per-group auth routes above so that, on a group's own domain (e.g. an
+| auth-enabled group with empty prefix + a domain), the host-scoped per-group
+| route wins and the group's route_group / hooks / membership checks fire — the
+| legacy route no longer shadows it.
+*/
+
+Route::prefix('auth')->group(function () {
+    Route::post('login', [AuthController::class, 'login']);
+    Route::post('password/recover', [AuthController::class, 'recoverPassword']);
+    Route::post('password/reset', [AuthController::class, 'reset']);
+    Route::post('register', [AuthController::class, 'registerWithInvitation']);
+    Route::post('logout', [AuthController::class, 'logout'])->middleware('auth:sanctum');
+});
 
 // Invitation routes (protected, require auth + organization context in tenant group)
 if ($hasTenantGroup) {
@@ -174,8 +216,20 @@ foreach ($sortedRouteGroups as $groupKey => $groupConfig) {
             $middleware[] = 'auth:sanctum';
         }
 
-        // Group-level middleware
+        // Group-level middleware (e.g. ResolveOrganizationFromRoute) runs BEFORE
+        // the membership gate so the organization is already resolved on the
+        // request when EnforceGroupMembership reads it — otherwise the gate's
+        // tenant org-match would be dead for tenant routes (org resolved too late).
         $middleware = array_merge($middleware, $groupMiddleware);
+
+        // When membership enforcement is on, gate non-public group routes on the
+        // user's group membership (NULL row = wildcard; tenant group also needs an
+        // org match). Appended AFTER the group middleware so org is resolved
+        // first. The gate is only appended when enforcement is on, keeping the
+        // flag-off stack byte-for-byte identical.
+        if ($groupKey !== 'public' && $enforceMembership) {
+            $middleware[] = EnforceGroupMembership::class;
+        }
 
         // Model-level middleware (applied to all actions)
         if (property_exists($modelClass, 'middleware')) {

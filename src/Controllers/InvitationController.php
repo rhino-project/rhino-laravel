@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
+use Rhino\Http\Middleware\EnforceGroupMembership;
 use Rhino\Models\OrganizationInvitation;
 use Rhino\Notifications\InvitationNotification;
 use App\Models\User;
@@ -55,6 +56,7 @@ class InvitationController extends Controller
         $validator = Validator::make($request->all(), [
             'email' => 'required|email|max:255',
             'role_id' => 'required|exists:roles,id',
+            'route_group' => 'nullable|string',
         ]);
 
         if ($validator->fails()) {
@@ -63,6 +65,40 @@ class InvitationController extends Controller
 
         $email = $request->input('email');
         $roleId = $request->input('role_id');
+        $routeGroup = $request->input('route_group');
+
+        // Validate the requested route_group: it must be a real, configured,
+        // non-public group. The 'public' group is never auth-enabled and so
+        // cannot be invited into.
+        if ($routeGroup !== null) {
+            $routeGroups = config('rhino.route_groups', []);
+
+            if (!isset($routeGroups[$routeGroup]) || $routeGroup === 'public') {
+                return response()->json([
+                    'message' => "Cannot invite into group '{$routeGroup}'",
+                ], 422);
+            }
+
+            // Privilege-escalation guard (design §8): when enforcement is on and
+            // the target group is concrete (non-null), the inviter must itself be
+            // a member of that group — otherwise a tenant-only inviter could mint
+            // an invitation into a group (e.g. admin) they cannot enter. A
+            // NULL-wildcard membership row counts as membership of every group.
+            //
+            // Tenancy of the target group decides the org dimension of the check:
+            // for a tenant group the inviter's membership must be scoped to this
+            // org; for a non-tenant group org is ignored (null-org membership).
+            if (config('rhino.auth.enforce_group_membership', false)) {
+                $targetIsTenant = $this->groupIsTenant($routeGroup, $routeGroups);
+                $membershipOrg = $targetIsTenant ? $org : null;
+
+                if (!EnforceGroupMembership::isMember($user, $routeGroup, $membershipOrg)) {
+                    return response()->json([
+                        'message' => "You are not a member of group '{$routeGroup}'",
+                    ], 403);
+                }
+            }
+        }
 
         // Check if user already exists and is in organization
         $existingUser = User::where('email', $email)->first();
@@ -94,9 +130,17 @@ class InvitationController extends Controller
             ], 422);
         }
 
-        // Create invitation
+        // Create invitation (carrying the target route_group, if any).
+        //
+        // Non-tenant target groups have no organization, so persist a NULL
+        // organization_id (design §3/§8) — accept() then creates a null-org
+        // membership row. Tenant (and legacy null-group) invites keep the org.
+        $isNonTenantGroup = $routeGroup !== null
+            && !$this->groupIsTenant($routeGroup, config('rhino.route_groups', []));
+
         $invitation = OrganizationInvitation::create([
-            'organization_id' => $org->id,
+            'organization_id' => $isNonTenantGroup ? null : $org->id,
+            'route_group' => $routeGroup,
             'email' => $email,
             'role_id' => $roleId,
             'invited_by' => $user->id,
@@ -106,6 +150,24 @@ class InvitationController extends Controller
         Mail::to($email)->send(new InvitationNotification($invitation));
 
         return response()->json($invitation->load(['organization', 'role', 'invitedBy']), 201);
+    }
+
+    /**
+     * Determine whether a configured route group is tenant-scoped (carries an
+     * {organization} parameter in its prefix or domain). Non-tenant groups have
+     * no organization context, so their memberships/invitations use a null org.
+     *
+     * @param  array<string, mixed>  $routeGroups
+     */
+    protected function groupIsTenant(string $routeGroup, array $routeGroups): bool
+    {
+        $config = $routeGroups[$routeGroup] ?? [];
+
+        $prefix = $config['prefix'] ?? '';
+        $domain = $config['domain'] ?? '';
+
+        return str_contains($prefix, '{organization}')
+            || str_contains((string) $domain, '{organization}');
     }
 
     /**

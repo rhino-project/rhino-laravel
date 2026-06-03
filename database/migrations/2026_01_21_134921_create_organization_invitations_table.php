@@ -13,8 +13,11 @@ return new class extends Migration
     {
         Schema::create('organization_invitations', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('organization_id')->constrained()->onDelete('cascade');
+            // organization_id is nullable for non-tenant group invites.
+            $table->foreignId('organization_id')->nullable()->constrained()->onDelete('cascade');
             $table->string('email')->index();
+            // route_group: which group the invitee joins (NULL for legacy/default).
+            $table->string('route_group')->nullable();
             $table->foreignId('role_id')->constrained()->onDelete('cascade');
             $table->string('token', 64)->unique()->index();
             $table->foreignId('invited_by')->constrained('users')->onDelete('cascade');

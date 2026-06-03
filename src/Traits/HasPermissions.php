@@ -36,13 +36,64 @@ trait HasPermissions
      *   2. When no $organization is provided (non-tenant route group) → checks users.permissions
      *      directly on the user model.
      *
+     * When group-membership enforcement is ON (`rhino.auth.enforce_group_membership`)
+     * AND a $routeGroup is provided, permissions resolve from the user_roles row
+     * matching ($organization, $routeGroup) — a NULL route_group row is a wildcard
+     * that matches any group. This path is only taken when enforcement is on; with
+     * the flag off, behavior is exactly as before (org-presence heuristic).
+     *
      * @param  string  $permission  The permission to check (e.g., 'posts.index')
      * @param  \App\Models\Organization|null  $organization  The organization context
+     * @param  string|null  $routeGroup  The resolved route group (only used when enforcement is on)
      * @return bool
      */
-    public function hasPermission(string $permission, $organization = null): bool
+    public function hasPermission(string $permission, $organization = null, ?string $routeGroup = null): bool
     {
         $slug = explode('.', $permission)[0] ?? '';
+
+        // Enforcement ON: resolve permissions from the membership row matching
+        // (org, route_group). Prefer the EXACT route_group row when one exists;
+        // a NULL route_group row (wildcard) is only consulted when there is no
+        // exact row for this group. This prevents a broad NULL `['*']` row from
+        // silently overriding a deliberately scoped (and more restrictive)
+        // per-group membership.
+        if (config('rhino.auth.enforce_group_membership', false)) {
+            $baseQuery = function () use ($organization) {
+                $q = $this->userRoles();
+
+                if ($organization) {
+                    $q->where('organization_id', $organization->id);
+                }
+
+                return $q;
+            };
+
+            // 1. Exact route_group row(s) take precedence.
+            if ($routeGroup !== null) {
+                $exactRoles = $baseQuery()->where('route_group', $routeGroup)->get();
+
+                if ($exactRoles->isNotEmpty()) {
+                    foreach ($exactRoles as $userRole) {
+                        if ($this->matchesPermission($permission, $slug, $userRole->permissions ?? [])) {
+                            return true;
+                        }
+                    }
+
+                    // An exact row exists: it is authoritative. Do NOT fall back
+                    // to the NULL-wildcard row.
+                    return false;
+                }
+            }
+
+            // 2. No exact row → fall back to NULL-wildcard row(s).
+            foreach ($baseQuery()->whereNull('route_group')->get() as $userRole) {
+                if ($this->matchesPermission($permission, $slug, $userRole->permissions ?? [])) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
 
         if ($organization) {
             // Tenant route group: check user_roles.permissions for this organization

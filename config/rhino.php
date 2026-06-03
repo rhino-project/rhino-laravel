@@ -30,11 +30,37 @@ return [
         //     'middleware' => [],
         //     'models' => '*',
         // ],
+        //
+        // A group may opt into group-aware auth by setting 'auth' => true. When
+        // set, the full auth route set (login, logout, password/recover,
+        // password/reset, register) is registered under the group's
+        // prefix/domain, tagged with the group's route_group. The legacy
+        // unprefixed /auth/* set always remains for the default/no-group case.
+        // An optional 'hooks' class (implementing Rhino\Contracts\AuthLifecycleHooks)
+        // runs after each auth action and may reject it.
+        //
+        // 'driver' => [
+        //     'prefix'     => 'driver',
+        //     'auth'       => true,                          // register auth routes for this group
+        //     'hooks'      => \App\Auth\DriverAuthHooks::class, // optional lifecycle hooks
+        //     'middleware' => [],
+        //     'models'     => ['trips'],
+        // ],
         'default' => [
             'prefix' => '',
             'middleware' => [],
             'models' => '*',
         ],
+    ],
+    'auth' => [
+        // Master flag for group membership enforcement. Default OFF: behavior is
+        // byte-for-byte what it is today (no membership check; permission source
+        // is the existing org-presence heuristic). When ON, an authenticated
+        // user must have a user_roles membership row matching the request's
+        // route_group (a NULL route_group row is a wildcard matching every group)
+        // and, for tenant groups, the resolved organization — else 403. Permissions
+        // then resolve from that matching membership row.
+        'enforce_group_membership' => false,
     ],
     'multi_tenant' => [
         'organization_identifier_column' => 'id', // Options: 'id', 'slug', or any other column name

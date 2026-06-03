@@ -14,6 +14,7 @@ class OrganizationInvitation extends Model
 
     protected $fillable = [
         'organization_id',
+        'route_group',
         'email',
         'role_id',
         'token',
@@ -107,18 +108,49 @@ class OrganizationInvitation extends Model
         $this->accepted_at = Carbon::now();
         $this->save();
 
-        // If user is provided, add them to the organization
+        // If user is provided, create the membership (user_roles) row carrying
+        // the invitation's route_group (+ org + role).
         if ($user) {
-            $organization = $this->organization;
             $role = $this->role;
+            $routeGroup = $this->route_group;
 
-            // Check if user is already in organization
-            if (!$organization->users()->where('users.id', $user->id)->exists()) {
-                $organization->users()->attach($user->id, [
-                    'role_id' => $role->id,
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ]);
+            if ($this->organization_id) {
+                // Tenant invitation: attach via the organization relationship,
+                // including route_group in the pivot. Skip if already a member.
+                $organization = $this->organization;
+
+                if (!$organization->users()->where('users.id', $user->id)->exists()) {
+                    $organization->users()->attach($user->id, [
+                        'role_id' => $role->id,
+                        'route_group' => $routeGroup,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                }
+            } else {
+                // Non-tenant invitation (no org): create the user_roles row
+                // directly with organization_id = null + route_group.
+                $userRoleClass = config('rhino.models.user_roles', \App\Models\UserRole::class);
+
+                $exists = $userRoleClass::query()
+                    ->where('user_id', $user->id)
+                    ->whereNull('organization_id')
+                    ->where('role_id', $role->id)
+                    ->where(function ($q) use ($routeGroup) {
+                        $routeGroup === null
+                            ? $q->whereNull('route_group')
+                            : $q->where('route_group', $routeGroup);
+                    })
+                    ->exists();
+
+                if (!$exists) {
+                    $userRoleClass::create([
+                        'user_id' => $user->id,
+                        'organization_id' => null,
+                        'role_id' => $role->id,
+                        'route_group' => $routeGroup,
+                    ]);
+                }
             }
         }
 

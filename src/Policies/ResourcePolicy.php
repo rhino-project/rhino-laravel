@@ -128,7 +128,8 @@ class ResourcePolicy implements HasHiddenColumns, HasPermittedAttributes
 
         if (method_exists($user, 'hasPermission')) {
             $organization = request()->attributes->get('organization');
-            return $user->hasPermission($permission, $organization);
+            $routeGroup = request()->route()?->defaults['route_group'] ?? null;
+            return $user->hasPermission($permission, $organization, $routeGroup);
         }
 
         // Fallback: if the user model doesn't implement hasPermission,
