@@ -7,6 +7,7 @@ return [
     'route_groups' => [
         // 'tenant' => [
         //     'prefix' => '{organization}',
+        //     // 'domain' => null, // Optionally constrain this group to a host.
         //     'middleware' => [\App\Http\Middleware\ResolveOrganizationFromRoute::class],
         //     'models' => '*',
         // ],
@@ -14,6 +15,20 @@ return [
         //     'prefix' => '',
         //     'middleware' => [],
         //     'models' => ['categories'],
+        // ],
+        //
+        // The optional 'domain' key constrains a group's routes to a specific
+        // host. This lets two groups share the same prefix while living on
+        // different domains. A parameterized domain such as
+        // '{organization}.example.com' exposes '{organization}' as a route
+        // parameter, so it flows into ResolveOrganizationFromRoute just like a
+        // path prefix. Groups without a 'domain' match any host (default).
+        //
+        // 'admin' => [
+        //     'prefix' => '',
+        //     'domain' => 'admin.example.com',
+        //     'middleware' => [],
+        //     'models' => '*',
         // ],
         'default' => [
             'prefix' => '',

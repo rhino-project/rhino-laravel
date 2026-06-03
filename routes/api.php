@@ -49,20 +49,59 @@ $globalControllerConfig = config('rhino', []);
 $allModels = $globalControllerConfig['models'] ?? [];
 $routeGroups = $globalControllerConfig['route_groups'] ?? [];
 
+// Fail fast on route groups that would silently shadow each other (same prefix
+// + intersecting host-set + overlapping models). This enforces that, without a
+// distinguishing domain, two or more overlapping groups need distinct prefixes.
+\Rhino\Routing\RouteGroupValidator::validate($routeGroups, $allModels);
+
 // Determine if any group is named 'tenant' (has org-scoped routes)
 $hasTenantGroup = isset($routeGroups['tenant']);
+
+// Extract the parameter names from a (possibly parameterized) domain, e.g.
+// '{organization}.example.com' => ['organization']. Used to constrain each
+// domain parameter to a single host label.
+$rhinoDomainParams = function (?string $domain): array {
+    if ($domain === null || $domain === '' || !preg_match_all('/\{(\w+)\}/', $domain, $matches)) {
+        return [];
+    }
+
+    return $matches[1];
+};
+
+// Build a route registrar for a group's (domain, prefix). When a domain is set
+// the group's routes are constrained to that host; parameterized domains such
+// as '{organization}.example.com' additionally constrain each domain parameter
+// to a single host label ('[^.]+') so it cannot capture dots / multiple labels
+// — matching path-segment semantics and keeping parity with the other stacks.
+$rhinoRegistrar = function (?string $domain, string $prefix) use ($rhinoDomainParams) {
+    $hasDomain = $domain !== null && $domain !== '';
+
+    $registrar = $hasDomain
+        ? Route::domain($domain)->prefix($prefix)
+        : Route::prefix($prefix);
+
+    $params = $rhinoDomainParams($domain);
+    if ($params) {
+        $registrar->where(array_fill_keys($params, '[^.]+'));
+    }
+
+    return $registrar;
+};
 
 // Invitation routes (protected, require auth + organization context in tenant group)
 if ($hasTenantGroup) {
     $tenantGroupConfig = $routeGroups['tenant'];
     $tenantPrefix = $tenantGroupConfig['prefix'] ?? '';
+    $tenantDomain = $tenantGroupConfig['domain'] ?? null;
     $tenantMiddleware = array_filter(array_merge(
         ['auth:sanctum'],
         $tenantGroupConfig['middleware'] ?? []
     ));
     $invitationPrefix = $tenantPrefix ? "{$tenantPrefix}/invitations" : 'invitations';
 
-    Route::prefix($invitationPrefix)
+    $invitationRegistrar = $rhinoRegistrar($tenantDomain, $invitationPrefix);
+
+    $invitationRegistrar
         ->middleware($tenantMiddleware)
         ->group(function () {
             Route::get('/', [InvitationController::class, 'index']);
@@ -75,9 +114,11 @@ if ($hasTenantGroup) {
 // Nested create/update endpoint (one request, multiple operations, single transaction)
 $nestedConfig = $globalControllerConfig['nested'] ?? [];
 $nestedPath = $nestedConfig['path'] ?? 'nested';
+$nestedDomain = null;
 if ($hasTenantGroup) {
     $tenantGroupConfig = $routeGroups['tenant'];
     $tenantPrefix = $tenantGroupConfig['prefix'] ?? '';
+    $nestedDomain = $tenantGroupConfig['domain'] ?? null;
     $nestedMiddleware = array_filter(array_merge(
         ['auth:sanctum'],
         $tenantGroupConfig['middleware'] ?? []
@@ -87,9 +128,15 @@ if ($hasTenantGroup) {
     $nestedMiddleware = ['auth:sanctum'];
     $nestedPrefix = $nestedPath;
 }
-Route::post($nestedPrefix, [GlobalController::class, 'nested'])
+$nestedRoute = Route::post($nestedPrefix, [GlobalController::class, 'nested'])
     ->middleware($nestedMiddleware)
     ->name('nested');
+if ($nestedDomain !== null && $nestedDomain !== '') {
+    $nestedRoute->domain($nestedDomain);
+    foreach ($rhinoDomainParams($nestedDomain) as $param) {
+        $nestedRoute->where($param, '[^.]+');
+    }
+}
 
 // Sort route groups: literal prefixes first, parameterized prefixes (containing {) last.
 // This prevents wildcard routes like {organization}/posts from capturing literal routes like admin/posts.
@@ -103,6 +150,7 @@ uasort($sortedRouteGroups, function ($a, $b) {
 // Register per-model CRUD routes for each route group
 foreach ($sortedRouteGroups as $groupKey => $groupConfig) {
     $groupPrefix = $groupConfig['prefix'] ?? '';
+    $groupDomain = $groupConfig['domain'] ?? null;
     $groupMiddleware = $groupConfig['middleware'] ?? [];
     $groupModels = $groupConfig['models'] ?? '*';
 
@@ -153,7 +201,14 @@ foreach ($sortedRouteGroups as $groupKey => $groupConfig) {
             class_uses_recursive($modelClass)
         );
 
-        Route::prefix($prefix)
+        // Build the route registrar. When the group declares a domain, the
+        // group's routes are constrained to that host (e.g. 'admin.example.com'
+        // or a parameterized '{organization}.example.com'). Domain parameters
+        // are exposed as route parameters, so '{organization}' flows into
+        // ResolveOrganizationFromRoute exactly like a path prefix would.
+        $registrar = $rhinoRegistrar($groupDomain, $prefix);
+
+        $registrar
             ->middleware($middleware)
             ->group(function () use ($slug, $groupKey, $actionMiddleware, $exceptActions, $usesSoftDeletes) {
                 if (!in_array('index', $exceptActions)) {
