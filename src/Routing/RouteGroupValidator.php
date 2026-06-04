@@ -37,6 +37,8 @@ class RouteGroupValidator
      */
     public static function validate(array $routeGroups, array $allModels): void
     {
+        self::assertSingleDefaultAuthGroup($routeGroups);
+
         $keys = array_keys($routeGroups);
         $count = count($keys);
 
@@ -63,6 +65,47 @@ class RouteGroupValidator
                 throw new RouteGroupConflictException(self::message($aKey, $bKey, $a, $b, $sharedModels));
             }
         }
+    }
+
+    /**
+     * Identify auth-enabled groups that have an empty prefix AND no domain.
+     *
+     * Such a group registers an auth route set (e.g. POST auth/login on every
+     * host) that is byte-for-byte identical to the legacy unprefixed /auth/*
+     * set — they are routing-indistinguishable. Exactly one such group is the
+     * supported case (it simply IS the default/legacy auth, see §11.1), but two
+     * or more are genuinely ambiguous: there is no way to tell which group a
+     * login on the bare path belongs to. Fail fast at boot.
+     *
+     * @param  array<string, array<string, mixed>>  $routeGroups
+     */
+    protected static function assertSingleDefaultAuthGroup(array $routeGroups): void
+    {
+        $offenders = [];
+
+        foreach ($routeGroups as $key => $group) {
+            if ($key === 'public' || empty($group['auth'])) {
+                continue;
+            }
+
+            if (self::normalizePrefix($group) === '' && self::normalizeDomain($group) === null) {
+                $offenders[] = $key;
+            }
+        }
+
+        if (count($offenders) < 2) {
+            return;
+        }
+
+        $names = implode(", ", array_map(fn ($k) => "'{$k}'", $offenders));
+
+        throw new RouteGroupConflictException(sprintf(
+            "Route groups %s are all auth-enabled with an empty prefix and no domain, so their auth "
+            . "routes (e.g. auth/login) are indistinguishable from each other and from the legacy "
+            . "/auth/* set — a login could not be attributed to a single group. Give all but one of "
+            . "them a distinct 'prefix' or 'domain'.",
+            $names
+        ));
     }
 
     /**

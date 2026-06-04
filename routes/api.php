@@ -81,8 +81,36 @@ $rhinoRegistrar = function (?string $domain, string $prefix) use ($rhinoDomainPa
 // for the default/no-group case. The 'public' group is never auth-enabled.
 $enforceMembership = (bool) (config('rhino.auth.enforce_group_membership', false));
 
+// §11.1: An auth-enabled group with an empty prefix AND no domain is routing-
+// indistinguishable from the legacy unprefixed /auth/* set — it simply IS the
+// default/legacy auth. Rather than register a second, colliding route set (which
+// the legacy set would shadow, leaving its route_group/hooks/membership dead), we
+// let the legacy auth routes adopt that group's route_group default below. The
+// RouteGroupValidator has already guaranteed there is at most ONE such group
+// (two or more throw at boot), so this is unambiguous.
+$rhinoDefaultAuthGroupKey = null;
 foreach ($routeGroups as $groupKey => $groupConfig) {
     if ($groupKey === 'public' || empty($groupConfig['auth'])) {
+        continue;
+    }
+
+    $hasPrefix = ($groupConfig['prefix'] ?? '') !== '';
+    $hasDomain = ($groupConfig['domain'] ?? null) !== null && ($groupConfig['domain'] ?? null) !== '';
+
+    if (!$hasPrefix && !$hasDomain) {
+        $rhinoDefaultAuthGroupKey = $groupKey;
+        break;
+    }
+}
+
+foreach ($routeGroups as $groupKey => $groupConfig) {
+    if ($groupKey === 'public' || empty($groupConfig['auth'])) {
+        continue;
+    }
+
+    // The empty-prefix + no-domain auth group is served by the legacy auth
+    // routes (which adopt its route_group below); do not register a colliding set.
+    if ($groupKey === $rhinoDefaultAuthGroupKey) {
         continue;
     }
 
@@ -122,12 +150,25 @@ foreach ($routeGroups as $groupKey => $groupConfig) {
 | legacy route no longer shadows it.
 */
 
-Route::prefix('auth')->group(function () {
-    Route::post('login', [AuthController::class, 'login']);
-    Route::post('password/recover', [AuthController::class, 'recoverPassword']);
-    Route::post('password/reset', [AuthController::class, 'reset']);
-    Route::post('register', [AuthController::class, 'registerWithInvitation']);
-    Route::post('logout', [AuthController::class, 'logout'])->middleware('auth:sanctum');
+// §11.1: When exactly one auth-enabled group has an empty prefix + no domain,
+// these legacy routes ARE that group's auth: they adopt its route_group default
+// so the controller resolves the group, its hooks fire, and membership engages
+// (no spurious 403). With no such group, route_group stays null — today's
+// group-less legacy auth, byte-for-byte unchanged.
+Route::prefix('auth')->group(function () use ($rhinoDefaultAuthGroupKey) {
+    $applyDefault = function (\Illuminate\Routing\Route $route) use ($rhinoDefaultAuthGroupKey) {
+        if ($rhinoDefaultAuthGroupKey !== null) {
+            $route->defaults('route_group', $rhinoDefaultAuthGroupKey);
+        }
+
+        return $route;
+    };
+
+    $applyDefault(Route::post('login', [AuthController::class, 'login']));
+    $applyDefault(Route::post('password/recover', [AuthController::class, 'recoverPassword']));
+    $applyDefault(Route::post('password/reset', [AuthController::class, 'reset']));
+    $applyDefault(Route::post('register', [AuthController::class, 'registerWithInvitation']));
+    $applyDefault(Route::post('logout', [AuthController::class, 'logout'])->middleware('auth:sanctum'));
 });
 
 // Invitation routes (protected, require auth + organization context in tenant group)
@@ -216,20 +257,22 @@ foreach ($sortedRouteGroups as $groupKey => $groupConfig) {
             $middleware[] = 'auth:sanctum';
         }
 
-        // Group-level middleware (e.g. ResolveOrganizationFromRoute) runs BEFORE
-        // the membership gate so the organization is already resolved on the
-        // request when EnforceGroupMembership reads it — otherwise the gate's
-        // tenant org-match would be dead for tenant routes (org resolved too late).
-        $middleware = array_merge($middleware, $groupMiddleware);
-
-        // When membership enforcement is on, gate non-public group routes on the
-        // user's group membership (NULL row = wildcard; tenant group also needs an
-        // org match). Appended AFTER the group middleware so org is resolved
-        // first. The gate is only appended when enforcement is on, keeping the
-        // flag-off stack byte-for-byte identical.
+        // §11.2: When membership enforcement is on, the membership gate must run
+        // BEFORE the group middleware (e.g. ResolveOrganizationFromRoute) so that
+        // an authenticated non-member gets the design's 403 instead of the org
+        // resolver's info-hiding 404. The gate resolves the org itself (from the
+        // route's {organization} param / identifier column) to perform the full
+        // (group, org) membership check. A genuinely missing org still 404s via
+        // ResolveOrganizationFromRoute, which runs afterwards.
+        //
+        // When enforcement is OFF (default), the gate is not added at all and the
+        // group middleware runs exactly as before — keeping today's 404
+        // info-hiding and the flag-off stack byte-for-byte identical.
         if ($groupKey !== 'public' && $enforceMembership) {
             $middleware[] = EnforceGroupMembership::class;
         }
+
+        $middleware = array_merge($middleware, $groupMiddleware);
 
         // Model-level middleware (applied to all actions)
         if (property_exists($modelClass, 'middleware')) {

@@ -370,4 +370,113 @@ class GroupMembershipTest extends TestCase
 
         $this->assertContains(\Rhino\Http\Middleware\EnforceGroupMembership::class, $route->gatherMiddleware());
     }
+
+    // ==================================================================
+    // §11.2 — membership denial is 403 (not 404) when enforcement is ON.
+    // ==================================================================
+
+    protected function tenantGroup(): array
+    {
+        return [
+            'tenant' => [
+                'prefix' => '{organization}',
+                'middleware' => [\Rhino\Http\Middleware\ResolveOrganizationFromRoute::class],
+                'models' => '*',
+            ],
+        ];
+    }
+
+    public function test_enforced_authenticated_non_member_of_org_gets_403_not_404(): void
+    {
+        // The headline §11.2 fix: an authenticated user who is NOT a member of
+        // the requested org/group must get 403 — taking precedence over
+        // ResolveOrganizationFromRoute's info-hiding 404 (the user does not
+        // belong to the org at all). The gate runs first and resolves the org.
+        $u = $this->createUser();
+        $role = $this->createRole();
+        $orgA = $this->createOrg('org-a');
+        $orgB = $this->createOrg('org-b');
+
+        // Member of tenant group in org A only; NO row whatsoever for org B, so
+        // ResolveOrganizationFromRoute would previously 404 the org-B request.
+        $this->membership($u, $orgA->id, 'tenant', $role->id, ['*']);
+
+        $this->loadRoutes($this->tenantGroup(), enforce: true);
+        $this->actingAs($u, 'sanctum');
+
+        $this->getJson("/api/{$orgB->id}/posts")
+            ->assertStatus(403)
+            ->assertJson(['message' => 'You are not a member of this group']);
+    }
+
+    public function test_enforced_member_of_org_gets_200(): void
+    {
+        $u = $this->createUser();
+        $role = $this->createRole();
+        $orgA = $this->createOrg('org-a');
+
+        $this->membership($u, $orgA->id, 'tenant', $role->id, ['*']);
+
+        $this->loadRoutes($this->tenantGroup(), enforce: true);
+        $this->actingAs($u, 'sanctum');
+
+        $this->getJson("/api/{$orgA->id}/posts")->assertStatus(200);
+    }
+
+    public function test_enforced_genuinely_missing_org_still_404(): void
+    {
+        // A genuinely non-existent org must still 404 (not 403): the gate passes
+        // through and ResolveOrganizationFromRoute returns its 404.
+        $u = $this->createUser();
+        $role = $this->createRole();
+        $orgA = $this->createOrg('org-a');
+
+        // Wildcard membership so the user is a member of any (group, org) it
+        // can resolve — proving the 404 comes from the missing org, not denial.
+        $this->membership($u, null, null, $role->id, ['*']);
+
+        $this->loadRoutes($this->tenantGroup(), enforce: true);
+        $this->actingAs($u, 'sanctum');
+
+        $this->getJson('/api/999999/posts')->assertStatus(404)
+            ->assertJson(['message' => 'Organization not found']);
+    }
+
+    public function test_enforcement_off_cross_org_still_404_unchanged(): void
+    {
+        // Flag OFF (default): cross-org access keeps today's info-hiding 404 from
+        // ResolveOrganizationFromRoute, byte-for-byte unchanged — no 403.
+        $u = \App\Models\User::forceCreate([
+            'name' => 'U', 'email' => 'u@example.com', 'password' => bcrypt('password'),
+            'permissions' => ['*'],
+        ]);
+        $role = $this->createRole();
+        $orgA = $this->createOrg('org-a');
+        $orgB = $this->createOrg('org-b');
+
+        // Member of org A only.
+        $this->membership($u, $orgA->id, 'tenant', $role->id, ['*']);
+
+        $this->loadRoutes($this->tenantGroup(), enforce: false);
+        $this->actingAs($u, 'sanctum');
+
+        $this->getJson("/api/{$orgB->id}/posts")
+            ->assertStatus(404)
+            ->assertJson(['message' => 'Organization not found']);
+    }
+
+    public function test_enforcement_off_does_not_add_gate_for_tenant_group(): void
+    {
+        // Regression guard: flag OFF → the membership gate is absent and the
+        // tenant middleware stack is exactly ResolveOrganizationFromRoute.
+        $this->loadRoutes($this->tenantGroup(), enforce: false);
+
+        $route = collect(Route::getRoutes()->getRoutes())
+            ->first(fn ($r) => $r->getName() === 'tenant.posts.index');
+
+        $this->assertNotContains(
+            \Rhino\Http\Middleware\EnforceGroupMembership::class,
+            $route->gatherMiddleware()
+        );
+    }
 }

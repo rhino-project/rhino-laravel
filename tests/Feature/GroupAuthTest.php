@@ -589,4 +589,156 @@ class GroupAuthTest extends TestCase
 
         $this->assertCount(0, TestAuthHooks::$calls);
     }
+
+    // ==================================================================
+    // §11.1 — auth-enabled group with empty prefix AND no domain adopts
+    // the legacy /auth/* routes (no colliding second set, no dead group).
+    // ==================================================================
+
+    public function test_default_empty_prefix_auth_group_does_not_register_colliding_routes(): void
+    {
+        // A single auth-enabled group with empty prefix + no domain must NOT
+        // register a second /auth/login (which the legacy set would shadow). The
+        // legacy set adopts its route_group default instead.
+        $this->loadRoutes([
+            'default' => [
+                'prefix' => '',
+                'auth' => true,
+                'hooks' => TestAuthHooks::class,
+                'middleware' => [],
+                'models' => '*',
+            ],
+        ]);
+
+        $loginRoutes = collect(Route::getRoutes()->getRoutes())
+            ->filter(fn ($r) => $r->uri() === 'api/auth/login')
+            ->values();
+
+        // Exactly one /auth/login route exists (no colliding duplicate).
+        $this->assertCount(1, $loginRoutes);
+        // And it carries the group's route_group default.
+        $this->assertSame('default', $loginRoutes[0]->defaults['route_group'] ?? null);
+    }
+
+    public function test_default_empty_prefix_auth_group_login_resolves_group_and_fires_hooks(): void
+    {
+        // Logging in via the legacy /auth/login must resolve the empty-prefix
+        // no-domain group, firing its hooks (the route_group is no longer null).
+        $this->createUser();
+        $this->loadRoutes([
+            'default' => [
+                'prefix' => '',
+                'auth' => true,
+                'hooks' => TestAuthHooks::class,
+                'middleware' => [],
+                'models' => '*',
+            ],
+        ]);
+
+        $this->postJson('/api/auth/login', [
+            'email' => 'user@example.com',
+            'password' => 'password123',
+        ])->assertStatus(200);
+
+        $this->assertCount(1, TestAuthHooks::$calls);
+        $this->assertSame('afterLogin', TestAuthHooks::$calls[0]['event']);
+        $this->assertSame('default', TestAuthHooks::$calls[0]['context']['routeGroup']);
+    }
+
+    public function test_default_empty_prefix_auth_group_enforces_membership_for_member(): void
+    {
+        // Membership engages for the empty-prefix group via the legacy route: a
+        // member logs in with NO spurious 403.
+        $user = $this->createUser();
+        $this->loadRoutes([
+            'default' => ['prefix' => '', 'auth' => true, 'middleware' => [], 'models' => '*'],
+        ], enforce: true);
+        $this->membership($user, null, 'default');
+
+        $this->postJson('/api/auth/login', [
+            'email' => 'user@example.com',
+            'password' => 'password123',
+        ])->assertStatus(200);
+    }
+
+    public function test_default_empty_prefix_auth_group_denies_non_member(): void
+    {
+        // Enforcement on + no membership row for 'default' → 403 (membership now
+        // engages because the legacy route carries the route_group).
+        $this->createUser();
+        $this->loadRoutes([
+            'default' => ['prefix' => '', 'auth' => true, 'middleware' => [], 'models' => '*'],
+        ], enforce: true);
+
+        $this->postJson('/api/auth/login', [
+            'email' => 'user@example.com',
+            'password' => 'password123',
+        ])->assertStatus(403)->assertJson(['message' => 'You are not a member of this group']);
+    }
+
+    public function test_two_empty_prefix_no_domain_auth_groups_throw_at_boot(): void
+    {
+        $this->expectException(\Rhino\Exceptions\RouteGroupConflictException::class);
+
+        $this->loadRoutes([
+            'a' => ['prefix' => '', 'auth' => true, 'middleware' => [], 'models' => ['posts']],
+            'b' => ['prefix' => '', 'auth' => true, 'middleware' => [], 'models' => ['categories']],
+        ]);
+    }
+
+    public function test_prefixed_auth_group_still_gets_its_own_routes_alongside_empty_default(): void
+    {
+        // An empty-prefix auth group (adopts legacy) PLUS a prefixed auth group
+        // (gets its own per-group set). Both coexist.
+        $this->loadRoutes([
+            'default' => ['prefix' => '', 'auth' => true, 'middleware' => [], 'models' => '*'],
+            'driver' => ['prefix' => 'driver', 'auth' => true, 'middleware' => [], 'models' => '*'],
+        ]);
+
+        $uris = collect(Route::getRoutes()->getRoutes())->map(fn ($r) => $r->uri())->all();
+
+        $this->assertContains('api/auth/login', $uris);
+        $this->assertContains('api/driver/auth/login', $uris);
+
+        // Legacy /auth/login adopts 'default'; driver keeps its own.
+        $legacy = collect(Route::getRoutes()->getRoutes())
+            ->first(fn ($r) => $r->uri() === 'api/auth/login');
+        $this->assertSame('default', $legacy->defaults['route_group'] ?? null);
+    }
+
+    public function test_domain_auth_group_still_gets_its_own_routes_alongside_empty_default(): void
+    {
+        // An empty-prefix no-domain group adopts legacy; a domain-distinguished
+        // auth group keeps its own host-scoped per-group routes.
+        $this->loadRoutes([
+            'default' => ['prefix' => '', 'auth' => true, 'middleware' => [], 'models' => '*'],
+            'admin' => ['prefix' => '', 'domain' => 'admin.example.com', 'auth' => true, 'middleware' => [], 'models' => '*'],
+        ]);
+
+        $adminRoute = collect(Route::getRoutes()->getRoutes())
+            ->first(fn ($r) => $r->uri() === 'api/auth/login' && $r->getDomain() === 'admin.example.com');
+
+        $this->assertNotNull($adminRoute);
+        $this->assertSame('admin', $adminRoute->defaults['route_group'] ?? null);
+    }
+
+    public function test_no_auth_group_app_keeps_group_less_legacy_auth(): void
+    {
+        // With NO auth-enabled group, the legacy /auth/* set stays group-less
+        // (route_group default is null) — today's behavior, unchanged.
+        $this->createUser();
+        $this->loadRoutes([
+            'default' => ['prefix' => '', 'middleware' => [], 'models' => '*'],
+        ]);
+
+        $legacy = collect(Route::getRoutes()->getRoutes())
+            ->first(fn ($r) => $r->uri() === 'api/auth/login');
+
+        $this->assertArrayNotHasKey('route_group', $legacy->defaults);
+
+        $this->postJson('/api/auth/login', [
+            'email' => 'user@example.com',
+            'password' => 'password123',
+        ])->assertStatus(200);
+    }
 }

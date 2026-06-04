@@ -2,6 +2,7 @@
 
 namespace Rhino\Http\Middleware;
 
+use App\Models\Organization;
 use App\Models\UserRole;
 use Closure;
 use Illuminate\Http\Request;
@@ -15,8 +16,15 @@ use Symfony\Component\HttpFoundation\Response;
  *
  * When active, the authenticated user must have a `user_roles` row matching the
  * request's resolved `route_group` (a NULL `route_group` row is a WILDCARD that
- * matches every group) and, for tenant groups (an organization is present on
- * the request), the resolved organization. No match → 403.
+ * matches every group) and, for tenant groups (a route with an `{organization}`
+ * parameter), the resolved organization. No match → 403.
+ *
+ * §11.2: when enforcement is on this gate is ordered BEFORE
+ * ResolveOrganizationFromRoute, so it resolves the organization itself (from the
+ * route param + identifier column) to make the (group, org) membership decision.
+ * An authenticated non-member therefore gets a 403 that takes precedence over the
+ * org resolver's info-hiding 404. A genuinely non-existent organization is left
+ * to ResolveOrganizationFromRoute, which 404s afterwards.
  *
  * The `public` group is never auth-enabled, so this middleware is never added
  * to its routes.
@@ -43,7 +51,15 @@ class EnforceGroupMembership
         }
 
         $routeGroup = $this->resolveRouteGroup($request);
-        $organization = $request->attributes->get('organization');
+        $organization = $this->resolveOrganization($request);
+
+        // A route that declares an {organization} param but resolves to no
+        // existing organization is NOT a membership denial — it is a genuinely
+        // non-existent org. Pass through so ResolveOrganizationFromRoute (ordered
+        // after this gate) returns its info-hiding 404 unchanged.
+        if ($this->routeExpectsOrganization($request) && $organization === null) {
+            return $next($request);
+        }
 
         if (!$this->isMember($user, $routeGroup, $organization)) {
             return response()->json([
@@ -66,6 +82,47 @@ class EnforceGroupMembership
         }
 
         return $route->defaults['route_group'] ?? null;
+    }
+
+    /**
+     * Whether the matched route carries an {organization} parameter (i.e. it is
+     * a tenant-group route whose membership decision must consider the org).
+     */
+    protected function routeExpectsOrganization(Request $request): bool
+    {
+        $route = $request->route();
+
+        return $route !== null && $route->hasParameter('organization');
+    }
+
+    /**
+     * Resolve the organization for the request.
+     *
+     * Prefers an organization already placed on the request attributes (e.g. by
+     * ResolveOrganizationFromRoute in configurations where it runs first), and
+     * otherwise resolves it from the route's {organization} parameter using the
+     * configured identifier column — mirroring ResolveOrganizationFromRoute so
+     * the gate's tenant org-match works when it is ordered first (§11.2).
+     */
+    protected function resolveOrganization(Request $request)
+    {
+        $organization = $request->attributes->get('organization');
+        if ($organization !== null) {
+            return $organization;
+        }
+
+        if (!$this->routeExpectsOrganization($request)) {
+            return null;
+        }
+
+        $identifier = $request->route()->parameter('organization');
+        if (!$identifier) {
+            return null;
+        }
+
+        $column = config('rhino.multi_tenant.organization_identifier_column', 'id');
+
+        return Organization::where($column, $identifier)->first();
     }
 
     /**
