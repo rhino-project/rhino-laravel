@@ -48,9 +48,14 @@ class AuthController extends Controller
         $newToken = $user->createToken('API Token');
         $token = $newToken->plainTextToken;
 
-        // Get the first organization the user belongs to
-        $firstOrganization = $user->organizations()->first();
-        $organizationSlug = $firstOrganization ? $firstOrganization->slug : null;
+        // Get the first organization the user belongs to. Single-tenant apps
+        // have no Organization model and no organizations() relation, so guard
+        // the call and simply return a null slug in that case.
+        $organizationSlug = null;
+        if (method_exists($user, 'organizations')) {
+            $firstOrganization = $user->organizations()->first();
+            $organizationSlug = $firstOrganization ? $firstOrganization->slug : null;
+        }
 
         // Lifecycle hook (may reject → revoke the just-issued token + return status).
         $rejection = $this->runHook($routeGroup, 'afterLogin', $user, [
