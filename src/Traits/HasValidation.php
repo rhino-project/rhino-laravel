@@ -174,6 +174,14 @@ trait HasValidation
             $rules = array_intersect_key($rules, array_flip($permittedFields));
         }
 
+        // Partial update (PATCH/PUT) semantics: on update, only validate fields
+        // actually present in the request, so sending e.g. {"status":"done"} is
+        // not rejected for omitting other 'required' fields. Store still
+        // validates the full ruleset (required fields are enforced on create).
+        if ($action === 'update') {
+            $rules = array_intersect_key($rules, $request->all());
+        }
+
         $rules = $this->scopeExistsRulesToOrganization($rules);
 
         return Validator::make($request->all(), $rules, $this->getValidationRulesMessages());

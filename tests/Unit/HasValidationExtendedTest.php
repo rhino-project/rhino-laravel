@@ -123,6 +123,20 @@ class HasValidationPipeOverrideModel extends Model
 // Tests
 // --------------------------------------------------------------------------
 
+class HasValidationRequiredModel extends Model
+{
+    use HasValidation, HidableColumns;
+
+    protected $table = 'hv_test_items';
+    protected $fillable = ['name', 'email', 'status'];
+
+    protected $validationRules = [
+        'name' => 'required|string|max:255',
+        'email' => 'nullable|email',
+        'status' => 'required|string|in:active,inactive',
+    ];
+}
+
 class HasValidationExtendedTest extends TestCase
 {
     protected function setUp(): void
@@ -215,6 +229,36 @@ class HasValidationExtendedTest extends TestCase
         $request = Request::create('', 'POST', ['name' => 'Test']);
         $validator = $model->validateForAction($request, ['name'], 'store');
         $this->assertFalse($validator->fails());
+    }
+
+    public function test_validate_for_action_update_is_partial(): void
+    {
+        // Partial update: only 'status' present; 'name' is required but absent.
+        // On update this must PASS (PATCH semantics — omitted fields aren't required).
+        $model = new HasValidationRequiredModel();
+        $request = Request::create('', 'PUT', ['status' => 'active']);
+        $validator = $model->validateForAction($request, ['*'], 'update');
+        $this->assertFalse($validator->fails(), 'partial update should not require absent fields');
+    }
+
+    public function test_validate_for_action_store_still_requires_fields(): void
+    {
+        // Same partial body on STORE must FAIL — required fields are enforced on create.
+        $model = new HasValidationRequiredModel();
+        $request = Request::create('', 'POST', ['status' => 'active']);
+        $validator = $model->validateForAction($request, ['*'], 'store');
+        $this->assertTrue($validator->fails());
+        $this->assertArrayHasKey('name', $validator->errors()->toArray());
+    }
+
+    public function test_validate_for_action_update_still_validates_present_fields(): void
+    {
+        // A present-but-invalid field still fails on update.
+        $model = new HasValidationRequiredModel();
+        $request = Request::create('', 'PUT', ['status' => 'bogus']);
+        $validator = $model->validateForAction($request, ['*'], 'update');
+        $this->assertTrue($validator->fails());
+        $this->assertArrayHasKey('status', $validator->errors()->toArray());
     }
 
     public function test_validate_for_action_with_no_validation_rules(): void
