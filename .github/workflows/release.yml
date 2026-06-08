@@ -64,7 +64,21 @@ jobs:
 
       - name: Notify Packagist
         run: |
-          curl -XPOST \
+          if [ -z "${{ secrets.PACKAGIST_USERNAME }}" ] || [ -z "${{ secrets.PACKAGIST_TOKEN }}" ]; then
+            echo "::error::PACKAGIST_USERNAME and/or PACKAGIST_TOKEN secret is not set."
+            exit 1
+          fi
+          RESPONSE=$(curl -sS -XPOST \
             -H 'Content-Type: application/json' \
             "https://packagist.org/api/update-package?username=${{ secrets.PACKAGIST_USERNAME }}&apiToken=${{ secrets.PACKAGIST_TOKEN }}" \
-            -d '{"repository":{"url":"https://github.com/${{ github.repository }}"}}'
+            -d '{"repository":{"url":"https://github.com/${{ github.repository }}"}}')
+          echo "Packagist response: $RESPONSE"
+          # Packagist returns {"status":"success",...} on success and
+          # {"status":"error","message":...} on a bad/missing token. The curl
+          # itself returns 200 either way, so the response body must be checked
+          # or a rejected update would pass silently.
+          if ! printf '%s' "$RESPONSE" | grep -q '"status":"success"'; then
+            echo "::error::Packagist update was rejected: $RESPONSE"
+            exit 1
+          fi
+          echo "✓ Packagist update queued"
