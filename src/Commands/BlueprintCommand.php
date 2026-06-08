@@ -83,6 +83,18 @@ class BlueprintCommand extends Command
             return 0;
         }
 
+        // Order so a referenced model's table is migrated before any model that
+        // foreign-keys to it (parents before children). Migration timestamps are
+        // assigned in iteration order, so this is what guarantees a runnable set.
+        $sorter = new \Rhino\Blueprint\BlueprintSorter();
+        $blueprints = $sorter->sort($blueprints);
+        if (!empty($sorter->cycles())) {
+            $this->printWarning(
+                'Circular foreign-key dependency among: ' . implode(', ', $sorter->cycles())
+                . '. Migration order is best-effort — make one side nullable or add the FK in a later migration.'
+            );
+        }
+
         // 3. Generate per-model artifacts
         foreach ($blueprints as $blueprint) {
             $this->processBlueprint($blueprint, $roles);
