@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\Organization;
+use App\Models\OrgRolePermission;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\UserRole;
@@ -62,28 +63,35 @@ class UserRoleSeeder extends Seeder
             ]
         );
 
-        // Assign admin role to user1 in organization 1 (admin gets wildcard permissions)
-        UserRole::firstOrCreate(
-            [
-                'user_id' => $user1->id,
-                'role_id' => $adminRole->id,
-                'organization_id' => $org1->id,
-            ],
-            [
-                'permissions' => ['*'],
-            ]
-        );
+        // Define the admin role layer ONCE per organization (org_role_permissions).
+        // Every admin in the org inherits this — no need to stuff permissions on
+        // each user_roles row. Per-user exceptions go in granted_permissions /
+        // denied_permissions instead.
+        foreach ([$org1, $org2] as $org) {
+            OrgRolePermission::firstOrCreate(
+                [
+                    'organization_id' => $org->id,
+                    'role_id' => $adminRole->id,
+                ],
+                [
+                    'permissions' => ['*'],
+                ]
+            );
+        }
 
-        // Assign admin role to user2 in organization 2 (admin gets wildcard permissions)
-        UserRole::firstOrCreate(
-            [
-                'user_id' => $user2->id,
-                'role_id' => $adminRole->id,
-                'organization_id' => $org2->id,
-            ],
-            [
-                'permissions' => ['*'],
-            ]
-        );
+        // Assign admin role to user1 in organization 1 (permissions inherited
+        // from the org_role_permissions role layer above).
+        UserRole::firstOrCreate([
+            'user_id' => $user1->id,
+            'role_id' => $adminRole->id,
+            'organization_id' => $org1->id,
+        ]);
+
+        // Assign admin role to user2 in organization 2.
+        UserRole::firstOrCreate([
+            'user_id' => $user2->id,
+            'role_id' => $adminRole->id,
+            'organization_id' => $org2->id,
+        ]);
     }
 }

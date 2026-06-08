@@ -21,7 +21,14 @@ return new class extends Migration
             // route_group scopes a membership to a group. NULL = wildcard
             // (member of every group), the back-compat default.
             $table->string('route_group')->nullable();
+            // Legacy per-user permission set (full list). Still honored as an
+            // allow layer for backward compatibility.
             $table->json('permissions')->nullable();
+            // Layered-permission deltas applied on top of the org role layer
+            // (org_role_permissions). granted = additive, denied = subtractive.
+            // Deny always wins. Leave both null to inherit the role layer as-is.
+            $table->json('granted_permissions')->nullable();
+            $table->json('denied_permissions')->nullable();
             $table->timestamps();
 
             $table->unique(['user_id', 'role_id', 'organization_id', 'route_group']);

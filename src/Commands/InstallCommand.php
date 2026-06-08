@@ -257,6 +257,11 @@ class InstallCommand extends Command
             $this->stubPath . '/migrations/create_user_roles_table.php.stub',
             $migrationsPath . "/{$timestamp}_02_create_user_roles_table.php"
         );
+
+        File::copy(
+            $this->stubPath . '/migrations/create_org_role_permissions_table.php.stub',
+            $migrationsPath . "/{$timestamp}_03_create_org_role_permissions_table.php"
+        );
     }
 
     protected function createModels(array $roles = ['admin']): void
@@ -279,6 +284,11 @@ class InstallCommand extends Command
         File::copy(
             $this->stubPath . '/models/UserRole.php.stub',
             $modelsPath . '/UserRole.php'
+        );
+
+        File::copy(
+            $this->stubPath . '/models/OrgRolePermission.php.stub',
+            $modelsPath . '/OrgRolePermission.php'
         );
     }
 

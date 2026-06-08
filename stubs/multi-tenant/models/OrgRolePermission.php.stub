@@ -1,0 +1,36 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+/**
+ * The shared "role layer" for permissions: what a role can do within a given
+ * organization. One row per (organization, role).
+ *
+ * Resolution (see Rhino\Traits\HasPermissions):
+ *   effective = (org_role_permissions ∪ user_roles.granted_permissions)
+ *               − user_roles.denied_permissions     (deny always wins)
+ */
+class OrgRolePermission extends Model
+{
+    protected $fillable = [
+        'organization_id',
+        'role_id',
+        'permissions',
+    ];
+
+    protected $casts = [
+        'permissions' => 'array',
+    ];
+
+    public function organization()
+    {
+        return $this->belongsTo(Organization::class);
+    }
+
+    public function role()
+    {
+        return $this->belongsTo(Role::class);
+    }
+}

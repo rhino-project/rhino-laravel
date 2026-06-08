@@ -10,6 +10,7 @@ use Rhino\Commands\GenerateInvitationLink;
 use Rhino\Commands\GenerateCommand;
 use Rhino\Commands\BlueprintCommand;
 use Rhino\Commands\InstallCommand;
+use Rhino\Commands\MigratePermissionsCommand;
 use Rhino\Models\OrganizationInvitation;
 use Rhino\Policies\InvitationPolicy;
 
@@ -44,6 +45,7 @@ class GlobalControllerServiceProvider extends ServiceProvider
             GenerateInvitationLink::class,
             ExportPostmanCommand::class,
             ExportTypesCommand::class,
+            MigratePermissionsCommand::class,
         ]);
     }
 }

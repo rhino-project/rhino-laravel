@@ -4,9 +4,18 @@ namespace Rhino\Traits;
 
 use App\Models\Organization;
 use App\Models\UserRole;
+use Illuminate\Support\Facades\DB;
 
 trait HasPermissions
 {
+    /**
+     * Per-request memoization of resolved org_role_permissions rows,
+     * keyed by "{organizationId}:{roleId}".
+     *
+     * @var array<string, string[]>
+     */
+    protected array $orgRolePermissionsCache = [];
+
     /**
      * Get the user role assignments.
      */
@@ -20,106 +29,263 @@ trait HasPermissions
      *
      * Permission format: '{slug}.{action}' (e.g., 'posts.index', 'blogs.store')
      *
-     * Supports wildcards:
-     *   - '*' grants access to everything
-     *   - 'posts.*' grants access to all actions on posts
+     * Supports wildcards on every layer:
+     *   - '*' grants/denies everything
+     *   - 'posts.*' grants/denies all actions on posts
      *
-     * Two permission sources:
-     *   - users.permissions: used for non-tenant route groups (no organization context).
-     *     Stored as a JSON array directly on the user model.
-     *   - user_roles.permissions: used for tenant route groups (organization context present).
-     *     Stored per-organization via the user_roles pivot table.
+     * ── Layered resolution (organization context) ──────────────────────────
+     * The effective decision for an org-scoped check is:
      *
-     * Resolution:
-     *   1. When an $organization is provided (tenant route group) → checks user_roles.permissions
-     *      for that specific organization.
-     *   2. When no $organization is provided (non-tenant route group) → checks users.permissions
-     *      directly on the user model.
+     *     effective = (role ∪ granted) − denied        (deny always wins)
+     *
+     *   - role     → org_role_permissions[(organization, role)].permissions
+     *                The shared "role layer" an org manages once per role.
+     *   - granted  → user_roles.granted_permissions  (per-user additive delta)
+     *   - denied   → user_roles.denied_permissions   (per-user subtractive delta)
+     *   - legacy   → user_roles.permissions          (kept in the allow set so
+     *                existing apps that store the full set per-user keep working)
+     *
+     * Deny is checked first and overrides everything — even a role '*'. This is
+     * intentionally deny-overrides (not most-specific-wins): a permission denied
+     * at the user layer is denied, period.
+     *
+     * Backward compatibility: when org_role_permissions has no row and the
+     * granted/denied columns are empty (or absent), the allow set reduces to the
+     * legacy user_roles.permissions and the behavior is byte-for-byte as before.
+     *
+     * ── Sources ────────────────────────────────────────────────────────────
+     *   1. $organization provided (tenant route group) → user_roles layers above.
+     *   2. No $organization (non-tenant route group)   → users.permissions
+     *      directly on the user model (with optional users.denied_permissions if
+     *      the column exists — deny still wins there too).
      *
      * When group-membership enforcement is ON (`rhino.auth.enforce_group_membership`)
-     * AND a $routeGroup is provided, permissions resolve from the user_roles row
+     * AND a $routeGroup is provided, the layers resolve from the user_roles row
      * matching ($organization, $routeGroup) — a NULL route_group row is a wildcard
-     * that matches any group. This path is only taken when enforcement is on; with
-     * the flag off, behavior is exactly as before (org-presence heuristic).
+     * that matches any group. An exact route_group row is authoritative: when one
+     * exists the NULL-wildcard row is NOT consulted.
      *
      * @param  string  $permission  The permission to check (e.g., 'posts.index')
      * @param  \App\Models\Organization|null  $organization  The organization context
      * @param  string|null  $routeGroup  The resolved route group (only used when enforcement is on)
-     * @return bool
      */
     public function hasPermission(string $permission, $organization = null, ?string $routeGroup = null): bool
     {
-        $slug = explode('.', $permission)[0] ?? '';
-
-        // Enforcement ON: resolve permissions from the membership row matching
-        // (org, route_group). Prefer the EXACT route_group row when one exists;
-        // a NULL route_group row (wildcard) is only consulted when there is no
-        // exact row for this group. This prevents a broad NULL `['*']` row from
-        // silently overriding a deliberately scoped (and more restrictive)
-        // per-group membership.
-        if (config('rhino.auth.enforce_group_membership', false)) {
-            $baseQuery = function () use ($organization) {
-                $q = $this->userRoles();
-
-                if ($organization) {
-                    $q->where('organization_id', $organization->id);
-                }
-
-                return $q;
-            };
-
-            // 1. Exact route_group row(s) take precedence.
-            if ($routeGroup !== null) {
-                $exactRoles = $baseQuery()->where('route_group', $routeGroup)->get();
-
-                if ($exactRoles->isNotEmpty()) {
-                    foreach ($exactRoles as $userRole) {
-                        if ($this->matchesPermission($permission, $slug, $userRole->permissions ?? [])) {
-                            return true;
-                        }
-                    }
-
-                    // An exact row exists: it is authoritative. Do NOT fall back
-                    // to the NULL-wildcard row.
-                    return false;
-                }
-            }
-
-            // 2. No exact row → fall back to NULL-wildcard row(s).
-            foreach ($baseQuery()->whereNull('route_group')->get() as $userRole) {
-                if ($this->matchesPermission($permission, $slug, $userRole->permissions ?? [])) {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        if ($organization) {
-            // Tenant route group: check user_roles.permissions for this organization
-            $userRoles = $this->userRoles()
-                ->where('organization_id', $organization->id)
-                ->get();
-
-            foreach ($userRoles as $userRole) {
-                $permissions = $userRole->permissions ?? [];
-
-                if ($this->matchesPermission($permission, $slug, $permissions)) {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        // Non-tenant route group: check users.permissions directly
-        $permissions = $this->permissions ?? [];
-
-        return $this->matchesPermission($permission, $slug, $permissions);
+        return $this->resolvePermission($permission, $organization, $routeGroup)['granted'];
     }
 
     /**
-     * Check if a permission matches against a list of granted permissions.
+     * Explain a permission decision — returns the deciding layer.
+     *
+     * @return array{granted: bool, reason: string}
+     *   reason ∈ { 'denied', 'role', 'granted', 'legacy', 'user', 'default-deny' }
+     */
+    public function explainPermission(string $permission, $organization = null, ?string $routeGroup = null): array
+    {
+        return $this->resolvePermission($permission, $organization, $routeGroup);
+    }
+
+    /**
+     * Resolve a permission to a decision + the layer that decided it.
+     *
+     * @return array{granted: bool, reason: string}
+     */
+    protected function resolvePermission(string $permission, $organization, ?string $routeGroup): array
+    {
+        $slug = explode('.', $permission)[0] ?? '';
+
+        // Enforcement ON: resolve from the membership row matching (org, group).
+        if (config('rhino.auth.enforce_group_membership', false)) {
+            $rows = $this->membershipRowsForEnforcement($organization, $routeGroup);
+
+            return $this->decideFromRows($permission, $slug, $rows, $organization);
+        }
+
+        if ($organization) {
+            // Tenant route group: layered resolution from user_roles for this org.
+            $rows = $this->userRoles()
+                ->where('organization_id', $organization->id)
+                ->get();
+
+            return $this->decideFromRows($permission, $slug, $rows, $organization);
+        }
+
+        // Non-tenant route group: users.permissions (+ optional user-level deltas).
+        $userPerms = $this->permissionList($this->permissions ?? null);
+        $userGrants = $this->permissionList($this->granted_permissions ?? null);
+        $userDenies = $this->permissionList($this->denied_permissions ?? null);
+
+        return $this->decide(
+            $permission,
+            $slug,
+            allow: array_merge($userPerms, $userGrants),
+            deny: $userDenies,
+            allowReasons: ['granted' => $userGrants, 'user' => $userPerms],
+        );
+    }
+
+    /**
+     * Collect the authoritative membership rows under group-enforcement.
+     *
+     * Exact route_group row(s) take precedence — when at least one exists it is
+     * authoritative and the NULL-wildcard row is not consulted. Otherwise the
+     * NULL-wildcard row(s) apply.
+     */
+    protected function membershipRowsForEnforcement($organization, ?string $routeGroup)
+    {
+        $base = function () use ($organization) {
+            $q = $this->userRoles();
+
+            if ($organization) {
+                $q->where('organization_id', $organization->id);
+            }
+
+            return $q;
+        };
+
+        if ($routeGroup !== null) {
+            $exact = $base()->where('route_group', $routeGroup)->get();
+
+            if ($exact->isNotEmpty()) {
+                return $exact;
+            }
+        }
+
+        return $base()->whereNull('route_group')->get();
+    }
+
+    /**
+     * Compute the decision from a set of user_role rows (org context).
+     *
+     * Unions the allow layers (legacy permissions ∪ granted ∪ org role layer)
+     * and the deny layer (denied) across every relevant row, then applies
+     * deny-overrides.
+     *
+     * @return array{granted: bool, reason: string}
+     */
+    protected function decideFromRows(string $permission, string $slug, $rows, $organization): array
+    {
+        $deny = [];
+        $legacy = [];
+        $granted = [];
+        $role = [];
+
+        foreach ($rows as $userRole) {
+            $deny = array_merge($deny, $this->permissionList($userRole->denied_permissions ?? null));
+            $legacy = array_merge($legacy, $this->permissionList($userRole->permissions ?? null));
+            $granted = array_merge($granted, $this->permissionList($userRole->granted_permissions ?? null));
+            $role = array_merge($role, $this->orgRolePermissions($organization, $userRole->role_id ?? null));
+        }
+
+        return $this->decide(
+            $permission,
+            $slug,
+            allow: array_merge($legacy, $granted, $role),
+            deny: $deny,
+            // Order here defines reason precedence among the ALLOW layers.
+            allowReasons: ['granted' => $granted, 'role' => $role, 'legacy' => $legacy],
+        );
+    }
+
+    /**
+     * Apply deny-overrides to an allow/deny pair and report the deciding layer.
+     *
+     * @param  string[]  $allow
+     * @param  string[]  $deny
+     * @param  array<string, string[]>  $allowReasons  layer-name => permission list,
+     *         in precedence order, used only to label which layer granted.
+     * @return array{granted: bool, reason: string}
+     */
+    protected function decide(string $permission, string $slug, array $allow, array $deny, array $allowReasons = []): array
+    {
+        // Deny always wins.
+        if ($this->matchesPermission($permission, $slug, $deny)) {
+            return ['granted' => false, 'reason' => 'denied'];
+        }
+
+        if ($this->matchesPermission($permission, $slug, $allow)) {
+            foreach ($allowReasons as $layer => $list) {
+                if ($this->matchesPermission($permission, $slug, $list)) {
+                    return ['granted' => true, 'reason' => $layer];
+                }
+            }
+
+            return ['granted' => true, 'reason' => 'allowed'];
+        }
+
+        return ['granted' => false, 'reason' => 'default-deny'];
+    }
+
+    /**
+     * Resolve the shared role-layer permissions for (organization, role) from the
+     * org_role_permissions table. Memoized per request; tolerant of the table not
+     * existing (un-migrated apps) so it degrades to "no role layer".
+     *
+     * @return string[]
+     */
+    protected function orgRolePermissions($organization, $roleId): array
+    {
+        if (!$organization || !$roleId) {
+            return [];
+        }
+
+        $orgId = is_object($organization) ? ($organization->id ?? null) : $organization;
+
+        if ($orgId === null) {
+            return [];
+        }
+
+        $key = $orgId . ':' . $roleId;
+
+        if (array_key_exists($key, $this->orgRolePermissionsCache)) {
+            return $this->orgRolePermissionsCache[$key];
+        }
+
+        $perms = [];
+
+        try {
+            $raw = DB::table('org_role_permissions')
+                ->where('organization_id', $orgId)
+                ->where('role_id', $roleId)
+                ->value('permissions');
+
+            $perms = $this->permissionList($raw);
+        } catch (\Throwable $e) {
+            // Table absent (app has not run the new migration) → no role layer.
+            $perms = [];
+        }
+
+        return $this->orgRolePermissionsCache[$key] = $perms;
+    }
+
+    /**
+     * Normalize a permissions value (array, JSON string, or null) into a clean
+     * list of string permissions.
+     *
+     * @return string[]
+     */
+    protected function permissionList($value): array
+    {
+        if (is_array($value)) {
+            return array_values(array_filter($value, 'is_string'));
+        }
+
+        if (is_string($value) && $value !== '') {
+            $decoded = json_decode($value, true);
+
+            return is_array($decoded)
+                ? array_values(array_filter($decoded, 'is_string'))
+                : [];
+        }
+
+        return [];
+    }
+
+    /**
+     * Check if a permission matches against a list of permissions.
+     * Supports exact match, global '*', and resource '{slug}.*' wildcards.
+     *
+     * @param  string[]  $grantedPermissions
      */
     protected function matchesPermission(string $permission, string $slug, array $grantedPermissions): bool
     {

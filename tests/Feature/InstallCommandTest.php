@@ -203,17 +203,19 @@ class InstallCommandTest extends TestCase
         $files = File::files($migrationsDir);
         $fileNames = array_map(fn ($f) => $f->getFilename(), $files);
 
-        // There should be three migration files
-        $this->assertCount(3, $files);
+        // There should be four migration files
+        $this->assertCount(4, $files);
 
         // Check file naming pattern (timestamp prefix + descriptive suffix)
         $orgMigration = collect($fileNames)->first(fn ($n) => str_contains($n, 'create_organizations_table'));
         $roleMigration = collect($fileNames)->first(fn ($n) => str_contains($n, 'create_roles_table'));
         $userRoleMigration = collect($fileNames)->first(fn ($n) => str_contains($n, 'create_user_roles_table'));
+        $orgRolePermMigration = collect($fileNames)->first(fn ($n) => str_contains($n, 'create_org_role_permissions_table'));
 
         $this->assertNotNull($orgMigration, 'Organizations migration file should exist');
         $this->assertNotNull($roleMigration, 'Roles migration file should exist');
         $this->assertNotNull($userRoleMigration, 'User roles migration file should exist');
+        $this->assertNotNull($orgRolePermMigration, 'Org role permissions migration file should exist');
 
         // Verify the content is copied from the stubs (not empty)
         foreach ($files as $file) {
@@ -250,10 +252,16 @@ class InstallCommandTest extends TestCase
         $this->assertStringContainsString("'admin'", $roleContent);
         $this->assertStringContainsString("'editor'", $roleContent);
 
-        // Verify UserRole.php was copied
+        // Verify UserRole.php was copied (now with grant/deny delta columns)
         $this->assertFileExists($modelsDir . '/UserRole.php');
         $userRoleContent = File::get($modelsDir . '/UserRole.php');
         $this->assertNotEmpty($userRoleContent);
+        $this->assertStringContainsString('granted_permissions', $userRoleContent);
+        $this->assertStringContainsString('denied_permissions', $userRoleContent);
+
+        // Verify OrgRolePermission.php (the shared role layer) was copied
+        $this->assertFileExists($modelsDir . '/OrgRolePermission.php');
+        $this->assertNotEmpty(File::get($modelsDir . '/OrgRolePermission.php'));
     }
 
     // ------------------------------------------------------------------
