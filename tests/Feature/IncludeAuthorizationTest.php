@@ -308,6 +308,24 @@ class IncludeAuthorResourcePolicy extends \Rhino\Policies\ResourcePolicy
     // via class match against config('rhino.models').
 }
 
+/**
+ * Test middleware that injects an organization into the request so the layered
+ * (tenant) permission path is exercised, without needing an {organization}
+ * URL segment. Mirrors what ResolveOrganizationFromRoute does in real apps.
+ */
+class IncludeSetOrgMiddleware
+{
+    public function handle($request, \Closure $next)
+    {
+        $org = \App\Models\Organization::find(1);
+        if ($org) {
+            $request->attributes->set('organization', $org);
+        }
+
+        return $next($request);
+    }
+}
+
 class IncludeAuthorizationTest extends TestCase
 {
     protected function setUp(): void
@@ -754,5 +772,137 @@ class IncludeAuthorizationTest extends TestCase
             'Without a concrete Gate::policy mapping, slug resolution must ' .
             'return null (so checkPermission denies by default).'
         );
+    }
+
+    // ----------------------------------------------------------------------
+    // Layered permissions (4.3) on a DIFFERENTLY-NAMED relation include.
+    //
+    // `IncludeArticle.author()` -> `IncludeAuthor` (slug 'authors'). The include
+    // is authorized through the REAL ResourcePolicy + layered hasPermission, so
+    // the effective permission for `authors.index` is resolved as
+    // (org_role_permissions ∪ granted) − denied, deny always wins. The relation
+    // name 'author' is irrelevant — the slug comes from the related model.
+    // ----------------------------------------------------------------------
+
+    protected function registerLayeredAuthorRoutes(): void
+    {
+        config([
+            'rhino.models' => [
+                'articles' => IncludeArticle::class,
+                'authors' => IncludeAuthor::class,
+            ],
+            'rhino.route_groups' => [
+                'tenant' => [
+                    'prefix' => '',
+                    'middleware' => [IncludeSetOrgMiddleware::class],
+                    'models' => '*',
+                ],
+            ],
+            'rhino.multi_tenant' => ['organization_identifier_column' => 'id'],
+        ]);
+
+        Route::prefix('api')->group(function () {
+            require __DIR__ . '/../../routes/api.php';
+        });
+
+        // Parent article is always viewable (isolates the assertion to the
+        // author include); the included author uses the REAL layered policy.
+        Gate::policy(IncludeArticle::class, IncludeArticlePolicy::class);
+        Gate::policy(IncludeAuthor::class, IncludeAuthorResourcePolicy::class);
+    }
+
+    /**
+     * Seed the org role layer + per-user deltas, an article + its author, and
+     * authenticate as the user.
+     *
+     * @param  array<string>  $roleLayer  org_role_permissions for (org, role)
+     * @param  array<string>  $granted    user_roles.granted_permissions
+     * @param  array<string>  $denied     user_roles.denied_permissions
+     */
+    protected function seedLayeredAuthorUser(array $roleLayer, array $granted = [], array $denied = []): void
+    {
+        $org = \App\Models\Organization::firstOrCreate(['id' => 1], ['name' => 'Org', 'slug' => 'org']);
+        $role = \App\Models\Role::firstOrCreate(['id' => 1], ['name' => 'Role', 'slug' => 'role']);
+        $user = \App\Models\User::firstOrCreate(
+            ['id' => 1],
+            ['name' => 'U', 'email' => 'u1@example.com', 'password' => bcrypt('password')]
+        );
+
+        \App\Models\UserRole::where('user_id', $user->id)->delete();
+        \App\Models\UserRole::forceCreate([
+            'user_id' => $user->id,
+            'role_id' => $role->id,
+            'organization_id' => $org->id,
+            'permissions' => [],
+            'granted_permissions' => $granted,
+            'denied_permissions' => $denied,
+        ]);
+
+        \Illuminate\Support\Facades\DB::table('org_role_permissions')->updateOrInsert(
+            ['organization_id' => $org->id, 'role_id' => $role->id],
+            ['permissions' => json_encode($roleLayer)]
+        );
+
+        $author = IncludeAuthor::forceCreate(['name' => 'Jane']);
+        IncludeArticle::forceCreate(['author_id' => $author->id, 'title' => 'Article 1']);
+
+        $this->actingAs($user, 'sanctum');
+    }
+
+    protected function callAuthorInclude(): \Illuminate\Testing\TestResponse
+    {
+        return $this->call('GET', '/api/articles', ['include' => 'author'], [], [], [
+            'HTTP_ACCEPT' => 'application/json',
+        ]);
+    }
+
+    public function test_layered_role_layer_permission_allows_differently_named_include(): void
+    {
+        $this->registerLayeredAuthorRoutes();
+        // Role layer grants authors.* → the author include is authorized.
+        $this->seedLayeredAuthorUser(roleLayer: ['authors.*']);
+
+        $this->callAuthorInclude()->assertStatus(200);
+    }
+
+    public function test_layered_denied_permission_blocks_differently_named_include(): void
+    {
+        $this->registerLayeredAuthorRoutes();
+        // Role layer grants '*' (covers authors.index) BUT the user is explicitly
+        // denied authors.* — deny wins, so the include is forbidden even though
+        // the relation name ('author') differs from the slug ('authors').
+        $this->seedLayeredAuthorUser(roleLayer: ['*'], denied: ['authors.*']);
+
+        $response = $this->callAuthorInclude();
+        $response->assertStatus(403);
+        $response->assertJson(['message' => 'You do not have permission to include author.']);
+    }
+
+    public function test_layered_denied_exact_permission_blocks_include_under_role_wildcard(): void
+    {
+        $this->registerLayeredAuthorRoutes();
+        // Same as above but the deny is the exact ability, not a wildcard.
+        $this->seedLayeredAuthorUser(roleLayer: ['*'], denied: ['authors.index']);
+
+        $this->callAuthorInclude()->assertStatus(403);
+    }
+
+    public function test_layered_default_deny_blocks_differently_named_include(): void
+    {
+        $this->registerLayeredAuthorRoutes();
+        // No authors permission anywhere (role layer only covers articles).
+        $this->seedLayeredAuthorUser(roleLayer: ['articles.*']);
+
+        $this->callAuthorInclude()->assertStatus(403);
+    }
+
+    public function test_layered_granted_permission_allows_differently_named_include(): void
+    {
+        $this->registerLayeredAuthorRoutes();
+        // Role layer has NO authors permission; a per-user grant of authors.index
+        // is enough to authorize the include (granted ∪ role).
+        $this->seedLayeredAuthorUser(roleLayer: [], granted: ['authors.index']);
+
+        $this->callAuthorInclude()->assertStatus(200);
     }
 }
