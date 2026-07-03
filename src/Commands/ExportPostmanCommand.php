@@ -236,6 +236,7 @@ class ExportPostmanCommand extends Command
         $allowedFields = $this->getModelProperty($modelClass, 'allowedFields', []);
         $allowedIncludes = $this->getModelProperty($modelClass, 'allowedIncludes', []);
         $allowedSearch = $this->getModelProperty($modelClass, 'allowedSearch', []);
+        $allowedScopes = $this->getModelProperty($modelClass, 'allowedScopes', []);
         $defaultSort = $this->getModelProperty($modelClass, 'defaultSort', null);
 
         $validationRules = $this->getModelProperty($modelClass, 'validationRules', []);
@@ -251,6 +252,7 @@ class ExportPostmanCommand extends Command
             'allowedFields' => is_array($allowedFields) ? $allowedFields : [],
             'allowedIncludes' => is_array($allowedIncludes) ? $allowedIncludes : [],
             'allowedSearch' => is_array($allowedSearch) ? $allowedSearch : [],
+            'allowedScopes' => is_array($allowedScopes) ? $allowedScopes : [],
             'defaultSort' => $defaultSort,
             'validationRules' => $validationRules,
             'validationRulesStore' => $validationRulesStore,
@@ -387,6 +389,10 @@ class ExportPostmanCommand extends Command
 
         if (! empty($modelMeta['allowedSearch'])) {
             $requests[] = $this->requestItem('Search', 'GET', $basePath, ['search' => 'example'], $headers);
+        }
+
+        foreach ($modelMeta['allowedScopes'] ?? [] as $scope) {
+            $requests[] = $this->requestItem('Scope ' . $scope, 'GET', $basePath, ['scope' => $scope], $headers);
         }
 
         $requests[] = $this->requestItem('Paginate', 'GET', $basePath, ['per_page' => '5', 'page' => '1'], $headers);

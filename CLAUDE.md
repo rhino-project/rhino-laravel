@@ -61,6 +61,7 @@ This library provides the following features. When modifying or extending any of
 | 8 | **Filtering** (`?filter[field]=value`, AND/OR logic) | `GlobalController.php` (Spatie Query Builder) |
 | 9 | **Sorting** (`?sort=-created_at,title`) | `GlobalController.php` |
 | 10 | **Full-Text Search** (`?search=term`, dot-notation for relationships) | `GlobalController.php` |
+| 10a | **Named Scopes** (`?scope=name`, model-whitelisted Eloquent scopes + `$defaultScope`, user injected, 403 on non-whitelisted; index/trashed only) | `GlobalController.php`, `RhinoModel.php` |
 | 11 | **Pagination** (header-based: X-Current-Page, X-Last-Page, X-Per-Page, X-Total) | `GlobalController.php` |
 | 12 | **Field Selection** (`?fields[posts]=id,title`) | `GlobalController.php` |
 | 13 | **Eager Loading** (`?include=user,comments`, nested, Count/Exists suffixes, auth per include) | `GlobalController.php` |

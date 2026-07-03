@@ -72,6 +72,23 @@ abstract class RhinoModel extends BaseRhinoModel
     // public static $allowedSearch   = ['title', 'content', 'excerpt'];
 
     // -----------------------------------------------------------------
+    // Named Scopes — client-selectable via ?scope=name
+    // -----------------------------------------------------------------
+    //
+    // Whitelisted scopeXxx() methods a client may select via ?scope=name on
+    // index/trashed listings. $defaultScope is applied automatically when no
+    // ?scope param is present. The default is a listing convenience, NOT a
+    // security boundary — mandatory restrictions belong in global scopes.
+    //
+    // public static $allowedScopes = ['availableForDrivers', 'active'];
+    // public static $defaultScope  = 'active';
+    //
+    // public function scopeActive(\Illuminate\Database\Eloquent\Builder $query, ?\Illuminate\Contracts\Auth\Authenticatable $user)
+    // {
+    //     return $query->where('status', 'active');
+    // }
+
+    // -----------------------------------------------------------------
     // Pagination
     // -----------------------------------------------------------------
     //

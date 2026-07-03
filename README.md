@@ -22,6 +22,7 @@ Register a model, get a full REST API instantly.
 | 8 | **Filtering** | `?filter[field]=value` with AND/OR logic. |
 | 9 | **Sorting** | `?sort=-created_at,title` — ascending and descending. |
 | 10 | **Full-Text Search** | `?search=term` across configured fields, supports relationship dot notation. |
+| 10a | **Named Scopes** | `?scope=name` applies a model-whitelisted Eloquent named scope (with an optional `$defaultScope`); the current user is injected; non-whitelisted names return 403. Applies to index/trashed. |
 | 11 | **Pagination** | Header-based metadata (`X-Current-Page`, `X-Last-Page`, `X-Per-Page`, `X-Total`). |
 | 12 | **Field Selection** | `?fields[posts]=id,title,status` to reduce payload. |
 | 13 | **Eager Loading** | `?include=user,comments` with nested, Count/Exists suffixes, and auth per include. |

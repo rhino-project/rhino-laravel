@@ -235,6 +235,44 @@ abstract class RhinoModel extends Model
     public static $allowedFilters = [];
 
     /**
+     * Named Eloquent scopes a client may select via `?scope=name`.
+     *
+     * Each entry is the camelCase name of a `scopeXxx()` method on the model.
+     * Arbitrary methods are NOT callable — only whitelisted named scopes are
+     * ever dispatched. Applies to `index` and `trashed` listings only.
+     *
+     * @example
+     * ```php
+     * public static $allowedScopes = ['availableForDrivers', 'active'];
+     * ```
+     *
+     * Query: `GET /api/routes?scope=availableForDrivers`
+     *
+     * The scope method receives the current sanctum user as its first argument:
+     * `public function scopeAvailableForDrivers(Builder $query, ?Authenticatable $user)`
+     *
+     * @var array<int,string>
+     */
+    public static $allowedScopes = [];
+
+    /**
+     * Named scope applied automatically when no `?scope` param is present.
+     *
+     * Must be a `scopeXxx()` method on the model. This is a listing convenience,
+     * NOT a security boundary — selecting another scope replaces it, so mandatory
+     * restrictions belong in global scopes. The default scope is always allowed
+     * when requested explicitly by name, even if absent from `$allowedScopes`.
+     *
+     * @example
+     * ```php
+     * public static $defaultScope = 'active';
+     * ```
+     *
+     * @var string|null
+     */
+    public static $defaultScope = null;
+
+    /**
      * Sortable columns.
      *
      * Controls which fields can be used for sorting via `?sort=field`.

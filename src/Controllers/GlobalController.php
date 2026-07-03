@@ -109,6 +109,10 @@ class GlobalController extends Controller
         // Apply organization scope if multi-tenant is enabled
         $this->applyOrganizationScope($query);
 
+        if ($scopeError = $this->applyNamedScope($query, $request)) {
+            return $scopeError;
+        }
+
         if (property_exists($this->modelClass, 'allowedFilters')) {
             $query = $query->allowedFilters($this->normalizeFilters($this->modelClass::$allowedFilters));
         } elseif ($request->has('filters')) {
@@ -364,6 +368,10 @@ class GlobalController extends Controller
         // Apply organization scope if multi-tenant is enabled
         $this->applyOrganizationScope($query);
 
+        if ($scopeError = $this->applyNamedScope($query, $request)) {
+            return $scopeError;
+        }
+
         if (property_exists($this->modelClass, 'allowedFilters')) {
             $query = $query->allowedFilters($this->normalizeFilters($this->modelClass::$allowedFilters));
         }
@@ -564,6 +572,62 @@ class GlobalController extends Controller
 
             return AllowedFilter::exact($filter);
         }, $filters);
+    }
+
+    /**
+     * Apply a client-selected named scope (`?scope=name`) or the model's default
+     * scope. Returns a 403 JsonResponse when the scope is not allowed, otherwise
+     * null. The current sanctum user is passed to the scope as its first argument.
+     *
+     * Only index() and trashed() call this; show/update/destroy are unscoped.
+     * The default scope is a listing convenience, not a security boundary —
+     * selecting another allowed scope replaces it. Mandatory restrictions belong
+     * in global scopes.
+     *
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function applyNamedScope($query, Request $request)
+    {
+        $name = $request->input('scope');
+
+        // Reject non-string input (?scope[]=x) before any interpolation.
+        if ($name !== null && ! is_string($name)) {
+            return response()->json(['message' => 'Scope is not allowed'], 403);
+        }
+
+        $default = property_exists($this->modelClass, 'defaultScope')
+            ? $this->modelClass::$defaultScope
+            : null;
+
+        if ($name === null || $name === '') {
+            $name = $default; // fall back to the model's default scope
+        } elseif ($name !== $default) {
+            $allowed = property_exists($this->modelClass, 'allowedScopes')
+                ? $this->modelClass::$allowedScopes
+                : [];
+
+            if (! in_array($name, $allowed, true)) {
+                return response()->json(['message' => "Scope '{$name}' is not allowed"], 403);
+            }
+        }
+
+        if ($name === null) {
+            return null; // no scope requested and no default declared
+        }
+
+        // hasNamedScope() guarantees only scopeXxx()/#[Scope] methods are ever
+        // invoked — never an arbitrary model or builder method.
+        if (! $this->modelClass->hasNamedScope($name)) {
+            return response()->json(['message' => "Scope '{$name}' is not allowed"], 403);
+        }
+
+        // Dispatch through Builder::scopes() (NOT $query->{$name}(...)) so the
+        // call can never be shadowed by a real QueryBuilder/Builder method or
+        // macro (e.g. a scope named 'delete' would otherwise execute
+        // Builder::delete()). Builder::scopes() routes straight to callNamedScope.
+        $query->scopes([$name => [auth('sanctum')->user()]]);
+
+        return null;
     }
 
     /**
