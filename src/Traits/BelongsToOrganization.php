@@ -15,7 +15,7 @@ trait BelongsToOrganization
     {
         // Automatically add organization_id when creating
         static::creating(function ($model) {
-            if (app()->runningInConsole()) {
+            if (app()->runningInConsole() && ! app()->runningUnitTests()) {
                 return;
             }
             
@@ -29,7 +29,7 @@ trait BelongsToOrganization
 
         // Add global scope to filter by organization
         static::addGlobalScope('organization', function (Builder $builder) {
-            if (app()->runningInConsole()) {
+            if (app()->runningInConsole() && ! app()->runningUnitTests()) {
                 return;
             }
             

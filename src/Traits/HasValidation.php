@@ -161,13 +161,19 @@ trait HasValidation
      * @param  string  $action  'store' or 'update'
      * @return \Illuminate\Validation\Validator
      */
-    public function validateForAction(Request $request, array $permittedFields, string $action): \Illuminate\Validation\Validator
+    public function validateForAction(Request $request, array $permittedFields, string $action, array $excludeFields = []): \Illuminate\Validation\Validator
     {
         if (! property_exists($this, 'validationRules')) {
             return Validator::make($request->all(), [], $this->getValidationRulesMessages());
         }
 
         $rules = $this->validationRules;
+
+        // Fields whose values are resolved server-side later (e.g. nested "$0.id"
+        // references) are excluded from format validation entirely.
+        if ($excludeFields !== []) {
+            $rules = array_diff_key($rules, array_flip($excludeFields));
+        }
 
         // If permittedFields is not wildcard, only validate those fields
         if ($permittedFields !== ['*']) {
