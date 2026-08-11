@@ -113,6 +113,7 @@ class BlueprintParser
             'except_actions' => $options['except_actions'] ?? [],
             'pagination' => $options['pagination'] ?? false,
             'per_page' => $options['per_page'] ?? 25,
+            'route_key' => $options['route_key'] ?? null,
         ];
     }
 

@@ -65,6 +65,24 @@ return [
     'multi_tenant' => [
         'organization_identifier_column' => 'id', // Options: 'id', 'slug', or any other column name
     ],
+
+    // ------------------------------------------------------------------
+    // Route key (member-endpoint lookup column)
+    // ------------------------------------------------------------------
+    // Which column the {id} URL segment is matched against on member
+    // endpoints (show, update, destroy, restore, force-delete), e.g.
+    // GET /api/jobs/{hash_id}.
+    //
+    // Resolution chain (first match wins):
+    //   1. Model static:  public static string $routeKey = 'hash_id';
+    //   2. This config value ('id' or null = not set, fall through)
+    //   3. The model's getRouteKeyName() (Eloquent default: primary key)
+    //
+    // The chosen column MUST be unique and SHOULD be indexed — it is used
+    // in a WHERE clause on every member request. This affects ONLY the URL
+    // segment lookup: foreign keys in payloads, nested-operation ids,
+    // `exists:` validation columns, and audit logs remain primary-key based.
+    'route_key' => 'id',
     'invitations' => [
         'expires_days' => env('INVITATION_EXPIRES_DAYS', 7),
         'allowed_roles' => null, // null means all roles can invite, or specify array of role slugs

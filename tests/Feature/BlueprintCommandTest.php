@@ -113,6 +113,44 @@ class BlueprintCommandTest extends TestCase
         $this->assertStringContainsString("constrained('cov_projects')", $taskMigration);
     }
 
+    // ── route_key option ───────────────────────────────────────────────
+
+    public function test_route_key_option_generates_route_key_static_on_model(): void
+    {
+        $this->writeRoles();
+        $yaml = "model: CovProject\nslug: cov_projects\ntable: cov_projects\n"
+            . "options:\n  soft_deletes: true\n  route_key: hash_id\n"
+            . "columns:\n  title:\n    type: string\n  hash_id:\n    type: string\n    unique: true\n";
+        File::put("{$this->bpDir}/cov_projects.yaml", $yaml);
+
+        $this->artisan('rhino:blueprint', [
+            '--dir' => 'rhino_cov_bp',
+            '--force' => true,
+            '--skip-tests' => true,
+            '--skip-seeders' => true,
+        ])->assertExitCode(0);
+
+        $model = File::get(app_path('Models/CovProject.php'));
+        $this->assertStringContainsString("public static string \$routeKey = 'hash_id';", $model);
+        $this->assertStringNotContainsString("// public static string \$routeKey", $model);
+    }
+
+    public function test_model_without_route_key_option_keeps_commented_example(): void
+    {
+        $this->writeRoles();
+        $this->writeModel('CovProject', 'cov_projects');
+
+        $this->artisan('rhino:blueprint', [
+            '--dir' => 'rhino_cov_bp',
+            '--force' => true,
+            '--skip-tests' => true,
+            '--skip-seeders' => true,
+        ])->assertExitCode(0);
+
+        $model = File::get(app_path('Models/CovProject.php'));
+        $this->assertStringContainsString("// public static string \$routeKey = 'hash_id';", $model);
+    }
+
     // ── dry-run writes nothing ─────────────────────────────────────────
 
     public function test_dry_run_generates_no_files(): void

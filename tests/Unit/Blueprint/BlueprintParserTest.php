@@ -300,6 +300,28 @@ YAML);
         $this->assertFalse($blueprint['options']['audit_trail']);
         $this->assertNull($blueprint['options']['owner']);
         $this->assertEquals([], $blueprint['options']['except_actions']);
+        $this->assertNull($blueprint['options']['route_key']); // default null (primary key)
+    }
+
+    public function test_parses_route_key_option(): void
+    {
+        $path = $this->createFixture('jobs.yaml', <<<YAML
+model: Job
+
+options:
+  route_key: hash_id
+
+columns:
+  title:
+    type: string
+  hash_id:
+    type: string
+    unique: true
+YAML);
+
+        $blueprint = $this->parser->parseModel($path);
+
+        $this->assertSame('hash_id', $blueprint['options']['route_key']);
     }
 
     public function test_normalizes_column_defaults(): void

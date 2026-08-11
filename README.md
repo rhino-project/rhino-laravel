@@ -13,6 +13,7 @@ Register a model, get a full REST API instantly.
 | # | Feature | Description |
 |---|---------|-------------|
 | 1 | **Automatic CRUD Endpoints** | Generates `index`, `show`, `store`, `update`, `destroy` for every registered model. |
+| 1a | **Configurable Route Key** | Match the `{id}` URL segment against any unique column on member endpoints (e.g. `GET /api/jobs/{hash_id}`) via `public static string $routeKey = 'hash_id';` per model or a global `route_key` config. Defaults to the primary key. |
 | 2 | **Authentication** | Login, logout, password recovery/reset, invitation-based registration via Sanctum. |
 | 3 | **Authorization & Policies** | Convention-based permission checks (`{slug}.{action}`), wildcard support. |
 | 4 | **Role-Based Access Control** | Per-org roles via `user_roles` pivot table. |

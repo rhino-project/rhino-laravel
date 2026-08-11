@@ -24,9 +24,11 @@ class TestGenerator
         $modelName = $blueprint['model'];
         $slug = $blueprint['slug'];
         $permissions = $blueprint['permissions'] ?? [];
+        // Attribute used to build member URLs — mirrors the model's $routeKey
+        $routeKeyAttr = $blueprint['options']['route_key'] ?? 'id';
 
-        $roleTests = $this->buildCrudAccessTests($modelName, $slug, $permissions, $isMultiTenant, $orgIdentifier, $framework);
-        $fieldVisibilityTests = $this->buildFieldVisibilityTests($modelName, $slug, $permissions, $isMultiTenant, $orgIdentifier, $framework);
+        $roleTests = $this->buildCrudAccessTests($modelName, $slug, $permissions, $isMultiTenant, $orgIdentifier, $framework, $routeKeyAttr);
+        $fieldVisibilityTests = $this->buildFieldVisibilityTests($modelName, $slug, $permissions, $isMultiTenant, $orgIdentifier, $framework, $routeKeyAttr);
         $forbiddenFieldTests = $this->buildForbiddenFieldTests($modelName, $slug, $permissions, $isMultiTenant, $orgIdentifier, $framework);
 
         $allTests = $roleTests . $fieldVisibilityTests . $forbiddenFieldTests;
@@ -51,7 +53,8 @@ class TestGenerator
         array $permissions,
         bool $isMultiTenant,
         string $orgIdentifier,
-        string $framework
+        string $framework,
+        string $routeKeyAttr = 'id'
     ): string {
         if (empty($permissions)) {
             return '';
@@ -67,10 +70,10 @@ class TestGenerator
         // Build URLs
         if ($isMultiTenant) {
             $listUrl = "'/api/' . \$org->{$orgIdentifier} . '/{$slug}'";
-            $itemUrl = "'/api/' . \$org->{$orgIdentifier} . '/{$slug}/' . \$model->id";
+            $itemUrl = "'/api/' . \$org->{$orgIdentifier} . '/{$slug}/' . \$model->{$routeKeyAttr}";
         } else {
             $listUrl = "'/api/{$slug}'";
-            $itemUrl = "'/api/{$slug}/' . \$model->id";
+            $itemUrl = "'/api/{$slug}/' . \$model->{$routeKeyAttr}";
         }
 
         foreach ($permissions as $role => $definition) {
@@ -115,16 +118,17 @@ class TestGenerator
         array $permissions,
         bool $isMultiTenant,
         string $orgIdentifier,
-        string $framework
+        string $framework,
+        string $routeKeyAttr = 'id'
     ): string {
         $isPest = $framework === 'pest';
         $indent = $isPest ? '    ' : '        ';
         $tests = '';
 
         if ($isMultiTenant) {
-            $itemUrl = "'/api/' . \$org->{$orgIdentifier} . '/{$slug}/' . \$model->id";
+            $itemUrl = "'/api/' . \$org->{$orgIdentifier} . '/{$slug}/' . \$model->{$routeKeyAttr}";
         } else {
-            $itemUrl = "'/api/{$slug}/' . \$model->id";
+            $itemUrl = "'/api/{$slug}/' . \$model->{$routeKeyAttr}";
         }
 
         $hasTests = false;
@@ -348,11 +352,15 @@ class TestGenerator
         }
 
         $test .= $this->buildUserSetup($role, $permissionsPhp, $isMultiTenant, $isPest, $indent);
-        $test .= "{$indent}\$model = {$modelName}::factory()->create();\n\n";
+        if ($isMultiTenant) {
+            $test .= "{$indent}\$model = {$modelName}::factory()->create(['organization_id' => \$org->id]);\n\n";
+        } else {
+            $test .= "{$indent}\$model = {$modelName}::factory()->create();\n\n";
+        }
         $test .= "{$indent}\$this->actingAs(\$user);\n\n";
 
         foreach ($endpoints as $endpoint) {
-            $expectedStatus = $allowed ? ($endpoint === 'store' ? 201 : 200) : 403;
+            $expectedStatus = $allowed ? ($endpoint === 'store' ? 201 : ($endpoint === 'destroy' ? 204 : 200)) : 403;
 
             $test .= match ($endpoint) {
                 'index' => "{$indent}\$this->getJson({$listUrl})->assertStatus({$expectedStatus});\n",

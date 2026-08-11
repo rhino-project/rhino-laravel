@@ -40,6 +40,16 @@ class GlobalController extends Controller
     }
 
     /**
+     * Resolve the column matched against the {id} URL segment for the current
+     * model (member endpoints only). Delegates to the central resolver:
+     * model static $routeKey → config('rhino.route_key') → getRouteKeyName().
+     */
+    protected function resolveRouteKeyName(): string
+    {
+        return \Rhino\Facades\Rhino::routeKeyName($this->modelClass);
+    }
+
+    /**
      * Resolve and set the model class for the given model name.
      */
     protected function resolveModelClass(string $model): void
@@ -222,7 +232,7 @@ class GlobalController extends Controller
         // For the Organization resource, scope already restricts to the current org; do not filter by route id to avoid no-result
         $query = QueryBuilder::for($this->modelClass::class);
         if (! $isOrganizationResource) {
-            $query->where('id', $id);
+            $query->where($this->resolveRouteKeyName(), $id);
         }
 
         // Apply organization scope if multi-tenant is enabled
@@ -260,7 +270,7 @@ class GlobalController extends Controller
         $isOrganizationResource = $organization && get_class($organization) === get_class($this->modelClass);
         $query = QueryBuilder::for($this->modelClass::class);
         if (! $isOrganizationResource) {
-            $query->where('id', $id);
+            $query->where($this->resolveRouteKeyName(), $id);
         }
 
         // Apply organization scope if multi-tenant is enabled
@@ -330,7 +340,7 @@ class GlobalController extends Controller
         $isOrganizationResource = $organization && get_class($organization) === get_class($this->modelClass);
         $query = QueryBuilder::for($this->modelClass::class);
         if (! $isOrganizationResource) {
-            $query->where('id', $id);
+            $query->where($this->resolveRouteKeyName(), $id);
         }
 
         // Apply organization scope if multi-tenant is enabled
@@ -430,7 +440,7 @@ class GlobalController extends Controller
         $isOrganizationResource = $organization && get_class($organization) === get_class($this->modelClass);
         $query = QueryBuilder::for($this->modelClass::class)->onlyTrashed();
         if (! $isOrganizationResource) {
-            $query->where('id', $id);
+            $query->where($this->resolveRouteKeyName(), $id);
         }
 
         // Apply organization scope if multi-tenant is enabled
@@ -462,7 +472,7 @@ class GlobalController extends Controller
         $isOrganizationResource = $organization && get_class($organization) === get_class($this->modelClass);
         $query = QueryBuilder::for($this->modelClass::class)->onlyTrashed();
         if (! $isOrganizationResource) {
-            $query->where('id', $id);
+            $query->where($this->resolveRouteKeyName(), $id);
         }
 
         // Apply organization scope if multi-tenant is enabled
@@ -499,7 +509,10 @@ class GlobalController extends Controller
         if ($id === null) {
             return null;
         }
-        if ((string) $organization->getKey() !== (string) $id) {
+        // Compare against the organization's resolved route-key attribute
+        // (defaults to the primary key, keeping historical behavior).
+        $routeKeyName = \Rhino\Facades\Rhino::routeKeyName($organization);
+        if ((string) $organization->getAttribute($routeKeyName) !== (string) $id) {
             return response()->json(['message' => 'Organization not found'], 404);
         }
         return null;
@@ -937,7 +950,28 @@ class GlobalController extends Controller
         }
         $this->resolveModelClass($slug);
         $modelClass = $this->modelClass;
-        $subRequest = Request::create('', 'POST', $operation['data'], [], [], [], []);
+
+        // Cross-operation references ("$0.id") are resolved at execution time —
+        // pull them out so format rules don't reject the placeholder strings,
+        // and reject references that don't point at an EARLIER operation.
+        $references = [];
+        $plainData = [];
+        foreach ($operation['data'] as $field => $value) {
+            if (is_string($value) && preg_match('/^\$(\d+)\.[A-Za-z0-9_]+$/', $value, $matches)) {
+                if ((int) $matches[1] >= $index) {
+                    return response()->json([
+                        'message' => 'Invalid reference.',
+                        'errors' => ['operations.' . $index . '.data.' . $field => ['References must point to an earlier operation.']],
+                    ], 422);
+                }
+                $references[$field] = $value;
+            } else {
+                $plainData[$field] = $value;
+            }
+        }
+
+        $subRequest = Request::create('', 'POST', $plainData, [], [], [], []);
+        $fullRequest = Request::create('', 'POST', $operation['data'], [], [], [], []);
 
         // Legacy path: model has $validationRulesStore/$validationRulesUpdate
         if ($modelClass->hasLegacyRulesConfig()) {
@@ -953,7 +987,7 @@ class GlobalController extends Controller
                 }
                 return response()->json(['message' => 'Validation failed.', 'errors' => $errors], 422);
             }
-            return $validator->validated();
+            return array_merge($validator->validated(), $references);
         }
 
         // New policy-driven path
@@ -962,14 +996,14 @@ class GlobalController extends Controller
         $permittedFields = $this->resolvePermittedFields($user, $action);
 
         // Check for forbidden fields → 403
-        $forbidden = $modelClass->findForbiddenFields($subRequest, $permittedFields);
+        $forbidden = $modelClass->findForbiddenFields($fullRequest, $permittedFields);
         if (!empty($forbidden)) {
             return response()->json([
                 'message' => 'You are not allowed to set the following field(s): ' . implode(', ', $forbidden),
             ], 403);
         }
 
-        $validator = $modelClass->validateForAction($subRequest, $permittedFields, $action === 'create' ? 'store' : 'update');
+        $validator = $modelClass->validateForAction($subRequest, $permittedFields, $action === 'create' ? 'store' : 'update', array_keys($references));
         if ($validator->fails()) {
             $errors = [];
             foreach ($validator->errors()->messages() as $key => $messages) {
@@ -977,7 +1011,7 @@ class GlobalController extends Controller
             }
             return response()->json(['message' => 'Validation failed.', 'errors' => $errors], 422);
         }
-        return $validator->validated();
+        return array_merge($validator->validated(), $references);
     }
 
     /**
@@ -1021,7 +1055,7 @@ class GlobalController extends Controller
 
                 if ($op['action'] === 'create') {
                     $this->resolveModelClass($op['model']);
-                    $data = $validated;
+                    $data = $this->resolveNestedReferences($validated, $results);
                     $this->addOrganizationToData($data);
                     $model = $this->modelClass::create($data);
                     $results[] = [
@@ -1032,7 +1066,7 @@ class GlobalController extends Controller
                     ];
                 } else {
                     $object = $modelOrNull;
-                    $object->update($validated);
+                    $object->update($this->resolveNestedReferences($validated, $results));
                     $object->refresh();
                     $results[] = [
                         'model' => $op['model'],
@@ -1044,5 +1078,24 @@ class GlobalController extends Controller
             }
         });
         return $results;
+    }
+
+    /**
+     * Replace "$N.field" reference strings with values from earlier operation
+     * results (e.g. "$0.id" → the id created by operation 0). Reference indices
+     * were validated upfront in validateNestedOperation().
+     */
+    protected function resolveNestedReferences(array $data, array $results): array
+    {
+        foreach ($data as $field => $value) {
+            if (is_string($value) && preg_match('/^\$(\d+)\.([A-Za-z0-9_]+)$/', $value, $matches)) {
+                $result = $results[(int) $matches[1]] ?? null;
+                $data[$field] = $matches[2] === 'id'
+                    ? ($result['id'] ?? null)
+                    : ($result['data'][$matches[2]] ?? null);
+            }
+        }
+
+        return $data;
     }
 }

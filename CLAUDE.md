@@ -52,6 +52,7 @@ This library provides the following features. When modifying or extending any of
 | # | Feature | Key Files |
 |---|---------|-----------|
 | 1 | **Automatic CRUD Endpoints** (index, show, store, update, destroy) | `GlobalController.php` |
+| 1a | **Configurable Route Key** (model `$routeKey` static → `route_key` config → primary key; member-endpoint `{id}` lookup only — payload FKs, nested-op ids, `exists:` rules and audit ids stay PK-based) | `RhinoManager.php`, `GlobalController.php`, `HidableColumns.php` |
 | 2 | **Authentication** (login, logout, password recovery/reset, invitation registration) | `AuthController.php` |
 | 3 | **Authorization & Policies** (convention-based `{slug}.{action}` permissions, wildcards) | `ResourcePolicy.php`, `HasPermissions.php` |
 | 4 | **Role-Based Access Control** (per-org roles via user_roles pivot) | `HasPermissions.php` |

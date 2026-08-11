@@ -507,6 +507,15 @@ class BlueprintCommand extends Command
             );
         }
 
+        // Handle route_key (custom column matched against the {id} URL segment)
+        if (!empty($options['route_key']) && $options['route_key'] !== 'id') {
+            $content = str_replace(
+                "    // public static string \$routeKey = 'hash_id';",
+                "    public static string \$routeKey = '{$options['route_key']}';",
+                $content
+            );
+        }
+
         // Handle except_actions
         if (!empty($options['except_actions'])) {
             $exceptPhp = $this->arrayToPhpString($options['except_actions'], 4);
@@ -873,7 +882,9 @@ PHP;
 
         $config = require $configPath;
 
-        return $config['organization_identifier'] ?? 'id';
+        return $config['organization_identifier']
+            ?? $config['multi_tenant']['organization_identifier_column']
+            ?? 'id';
     }
 
     // ------------------------------------------------------------------

@@ -264,6 +264,48 @@ class SpyPermittedAttributesPolicy extends ResourcePolicy
 }
 
 // --------------------------------------------------------------------------
+// Route-key serialization fixtures
+// --------------------------------------------------------------------------
+
+/** Model with a custom route key (static $routeKey). */
+class HidableRoutedPost extends Model
+{
+    use HidableColumns;
+
+    protected $table = 'hidable_rk_posts';
+    protected $fillable = ['title', 'hash_id', 'secret'];
+
+    public static string $routeKey = 'hash_id';
+}
+
+/** Same table, no static — follows config('rhino.route_key') / default. */
+class HidablePlainRoutedPost extends Model
+{
+    use HidableColumns;
+
+    protected $table = 'hidable_rk_posts';
+    protected $fillable = ['title', 'hash_id', 'secret'];
+}
+
+/** Whitelist policy that permits only `title`. */
+class RouteKeyWhitelistPolicy extends ResourcePolicy
+{
+    public function permittedAttributesForShow(?Authenticatable $user): array
+    {
+        return ['title'];
+    }
+}
+
+/** Policy that explicitly blacklists the route-key column. */
+class RouteKeyBlacklistPolicy extends ResourcePolicy
+{
+    public function hiddenAttributesForShow(?Authenticatable $user): array
+    {
+        return ['hash_id'];
+    }
+}
+
+// --------------------------------------------------------------------------
 // Tests
 // --------------------------------------------------------------------------
 
@@ -286,11 +328,21 @@ class HidableColumnsTest extends TestCase
             $table->timestamps();
             $table->softDeletes();
         });
+
+        Schema::create('hidable_rk_posts', function (Blueprint $table) {
+            $table->id();
+            $table->string('title');
+            $table->string('hash_id')->unique();
+            $table->string('secret')->nullable();
+            $table->timestamps();
+        });
     }
 
     protected function tearDown(): void
     {
         // Clear static cache between tests to avoid cross-test contamination
+        HidableRoutedPost::clearHiddenColumnsCache();
+        HidablePlainRoutedPost::clearHiddenColumnsCache();
         HidablePost::clearHiddenColumnsCache();
         HidablePostWithAdditional::clearHiddenColumnsCache();
         HidablePostWithNoPolicy::clearHiddenColumnsCache();
@@ -1102,5 +1154,82 @@ class HidableColumnsTest extends TestCase
         // Both computed attributes are excluded
         $this->assertArrayNotHasKey('test_value', $array);
         $this->assertArrayNotHasKey('secret_score', $array);
+    }
+
+    // ------------------------------------------------------------------
+    // Route-key column serialization (configurable route key feature)
+    // ------------------------------------------------------------------
+
+    public function test_route_key_column_survives_policy_whitelist(): void
+    {
+        $this->registerPolicy(HidableRoutedPost::class, RouteKeyWhitelistPolicy::class);
+
+        $post = HidableRoutedPost::forceCreate([
+            'title' => 'Routed',
+            'hash_id' => 'abc123',
+            'secret' => 'classified',
+        ]);
+
+        $array = $post->asRhinoJson(null);
+
+        // Whitelist is ['title'], but id and the route key must survive
+        $this->assertArrayHasKey('title', $array);
+        $this->assertSame('abc123', $array['hash_id'] ?? null);
+        $this->assertArrayHasKey('id', $array);
+        // Other non-permitted columns are still stripped
+        $this->assertArrayNotHasKey('secret', $array);
+    }
+
+    public function test_globally_configured_route_key_survives_policy_whitelist(): void
+    {
+        config(['rhino.route_key' => 'hash_id']);
+        $this->registerPolicy(HidablePlainRoutedPost::class, RouteKeyWhitelistPolicy::class);
+
+        $post = HidablePlainRoutedPost::forceCreate([
+            'title' => 'Routed',
+            'hash_id' => 'abc123',
+            'secret' => 'classified',
+        ]);
+
+        $array = $post->asRhinoJson(null);
+
+        $this->assertArrayHasKey('title', $array);
+        $this->assertSame('abc123', $array['hash_id'] ?? null);
+        $this->assertArrayHasKey('id', $array);
+        $this->assertArrayNotHasKey('secret', $array);
+    }
+
+    public function test_non_route_key_column_is_stripped_by_whitelist_without_route_key(): void
+    {
+        // No static, no config: hash_id is an ordinary column and must be stripped
+        $this->registerPolicy(HidablePlainRoutedPost::class, RouteKeyWhitelistPolicy::class);
+
+        $post = HidablePlainRoutedPost::forceCreate([
+            'title' => 'Plain',
+            'hash_id' => 'abc123',
+        ]);
+
+        $array = $post->asRhinoJson(null);
+
+        $this->assertArrayHasKey('title', $array);
+        $this->assertArrayHasKey('id', $array);
+        $this->assertArrayNotHasKey('hash_id', $array);
+    }
+
+    public function test_explicit_policy_blacklist_still_hides_route_key_column(): void
+    {
+        // An explicit hiddenAttributesForShow entry is a deliberate developer
+        // choice and wins over the route-key always-visible default.
+        $this->registerPolicy(HidableRoutedPost::class, RouteKeyBlacklistPolicy::class);
+
+        $post = HidableRoutedPost::forceCreate([
+            'title' => 'Routed',
+            'hash_id' => 'abc123',
+        ]);
+
+        $array = $post->asRhinoJson(null);
+
+        $this->assertArrayHasKey('title', $array);
+        $this->assertArrayNotHasKey('hash_id', $array);
     }
 }

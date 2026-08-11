@@ -52,6 +52,14 @@ class {{ class }} extends RhinoModel
     // public static array $exceptActions = [];
 
     // ---------------------------------------------------------------
+    // Route key (uncomment to match the {id} URL segment against a
+    // different column on member endpoints, e.g. GET /api/jobs/{hash_id}.
+    // The column MUST be unique and SHOULD be indexed. Falls back to
+    // config('rhino.route_key'), then the model's primary key.)
+    // ---------------------------------------------------------------
+    // public static string $routeKey = 'hash_id';
+
+    // ---------------------------------------------------------------
     // Hidden columns (add columns to hide from API responses)
     // ---------------------------------------------------------------
     // protected static $additionalHiddenColumns = [];

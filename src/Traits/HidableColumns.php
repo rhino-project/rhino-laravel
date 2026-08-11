@@ -74,7 +74,7 @@ trait HidableColumns
             // Sanctum guard not defined — fall back to default guard
             $user = auth()->user();
         }
-        $cacheKey = static::class . ':' . ($user?->id ?? 'guest');
+        $cacheKey = static::class . ':' . ($user?->id ?? 'guest') . ':' . (request()->attributes->get('organization')?->id ?? 'no-org');
 
         if (!isset(static::$hiddenColumnsCache[$cacheKey])) {
             static::$hiddenColumnsCache[$cacheKey] = $this->resolveHiddenColumnsFromPolicy($user);
@@ -113,9 +113,12 @@ trait HidableColumns
 
                 $permitted = $policy->permittedAttributesForShow($user);
                 if ($permitted !== ['*']) {
-                    // Hide all columns that are NOT in the permitted list
+                    // Hide all columns that are NOT in the permitted list.
+                    // The id and the resolved route-key column are always kept
+                    // visible so clients can build member URLs even under
+                    // restrictive whitelists (explicit blacklists still win).
                     $allColumns = $this->getColumns();
-                    $notPermitted = array_diff($allColumns, $permitted);
+                    $notPermitted = array_diff($allColumns, $permitted, $this->rhinoAlwaysPermittedColumns());
                     $hidden = array_unique(array_merge($hidden, $notPermitted));
                 }
 
@@ -172,11 +175,28 @@ trait HidableColumns
         $permitted = $this->resolvePolicyPermittedAttributes($user);
         if ($permitted !== null && $permitted !== ['*']) {
             $permittedSet = array_flip($permitted);
-            $permittedSet['id'] = true; // id is always allowed
+            // id and the resolved route-key column are always allowed so
+            // clients can build member URLs (e.g. /api/jobs/{hash_id})
+            foreach ($this->rhinoAlwaysPermittedColumns() as $column) {
+                $permittedSet[$column] = true;
+            }
             $result = array_intersect_key($result, $permittedSet);
         }
 
         return $result;
+    }
+
+    /**
+     * Columns that must survive policy whitelists: the id plus the resolved
+     * route-key column (see Rhino::routeKeyName()). By default the route key
+     * resolves to the primary key, so this is just ['id'] — identical to the
+     * historical behavior.
+     *
+     * @return array<string>
+     */
+    protected function rhinoAlwaysPermittedColumns(): array
+    {
+        return array_unique(['id', \Rhino\Facades\Rhino::routeKeyName($this)]);
     }
 
     /**
@@ -225,7 +245,7 @@ trait HidableColumns
             }
         }
 
-        $cacheKey = static::class . ':' . ($user?->id ?? 'guest');
+        $cacheKey = static::class . ':' . ($user?->id ?? 'guest') . ':' . (request()->attributes->get('organization')?->id ?? 'no-org');
         if (!isset(static::$hiddenColumnsCache[$cacheKey])) {
             static::$hiddenColumnsCache[$cacheKey] = $this->resolveHiddenColumnsFromPolicy($user);
         }

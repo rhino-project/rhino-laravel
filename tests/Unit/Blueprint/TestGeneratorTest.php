@@ -724,4 +724,99 @@ class TestGeneratorTest extends TestCase
         $this->assertStringContainsString('Organization::factory()->create()', $result);
         $this->assertStringNotContainsString('createUserWithPermissions', $result);
     }
+
+    // ---------------------------------------------------------------
+    // route_key option tests
+    // ---------------------------------------------------------------
+
+    protected function routeKeyBlueprint(?string $routeKey): array
+    {
+        return [
+            'model' => 'Job',
+            'slug' => 'jobs',
+            'options' => ['route_key' => $routeKey],
+            'permissions' => [
+                'admin' => [
+                    'actions' => ['index', 'show', 'update', 'destroy'],
+                    'show_fields' => ['id', 'title'],
+                    'create_fields' => [],
+                    'update_fields' => ['title'],
+                    'hidden_fields' => ['secret'],
+                ],
+            ],
+        ];
+    }
+
+    public function test_generate_uses_route_key_attribute_in_item_urls(): void
+    {
+        $result = $this->generator->generate($this->routeKeyBlueprint('hash_id'), 'pest', false, 'id');
+
+        $this->assertStringContainsString("'/api/jobs/' . \$model->hash_id", $result);
+        $this->assertStringNotContainsString("'/api/jobs/' . \$model->id", $result);
+    }
+
+    public function test_generate_uses_route_key_attribute_in_multi_tenant_item_urls(): void
+    {
+        $result = $this->generator->generate($this->routeKeyBlueprint('hash_id'), 'pest', true, 'slug');
+
+        $this->assertStringContainsString("'/api/' . \$org->slug . '/jobs/' . \$model->hash_id", $result);
+        $this->assertStringNotContainsString("\$model->id", $result);
+    }
+
+    public function test_generate_defaults_to_id_when_route_key_option_absent(): void
+    {
+        $blueprint = $this->routeKeyBlueprint(null);
+        unset($blueprint['options']);
+
+        $result = $this->generator->generate($blueprint, 'pest', false, 'id');
+
+        $this->assertStringContainsString("'/api/jobs/' . \$model->id", $result);
+    }
+
+    public function test_generate_defaults_to_id_when_route_key_option_null(): void
+    {
+        $result = $this->generator->generate($this->routeKeyBlueprint(null), 'pest', false, 'id');
+
+        $this->assertStringContainsString("'/api/jobs/' . \$model->id", $result);
+    }
+
+    public function test_build_crud_access_tests_accepts_route_key_attr(): void
+    {
+        $permissions = [
+            'admin' => [
+                'actions' => ['show'],
+                'show_fields' => ['*'],
+                'create_fields' => [],
+                'update_fields' => [],
+                'hidden_fields' => [],
+            ],
+        ];
+
+        $result = $this->generator->buildCrudAccessTests(
+            'Job', 'jobs', $permissions,
+            false, 'id', 'phpunit', 'hash_id'
+        );
+
+        $this->assertStringContainsString("'/api/jobs/' . \$model->hash_id", $result);
+    }
+
+    public function test_build_field_visibility_tests_accepts_route_key_attr(): void
+    {
+        $permissions = [
+            'viewer' => [
+                'actions' => ['show'],
+                'show_fields' => ['id', 'title'],
+                'create_fields' => [],
+                'update_fields' => [],
+                'hidden_fields' => ['secret'],
+            ],
+        ];
+
+        $result = $this->generator->buildFieldVisibilityTests(
+            'Job', 'jobs', $permissions,
+            false, 'id', 'pest', 'hash_id'
+        );
+
+        $this->assertStringContainsString("'/api/jobs/' . \$model->hash_id", $result);
+    }
 }
