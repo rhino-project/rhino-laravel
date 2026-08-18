@@ -424,7 +424,7 @@ abstract class RhinoModel extends Model
      * CRUD actions to exclude from route registration.
      *
      * Valid values: `'index'`, `'show'`, `'store'`, `'update'`, `'destroy'`,
-     * `'trashed'`, `'restore'`, `'forceDelete'`.
+     * `'trashed'`, `'restore'`, `'forceDelete'`, `'computed'`.
      *
      * @example
      * ```php

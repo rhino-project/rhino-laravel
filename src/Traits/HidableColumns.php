@@ -151,7 +151,7 @@ trait HidableColumns
      * @param  mixed  $user  The authenticated user (or null for guests)
      * @return array<string, mixed>
      */
-    public function asRhinoJson($user = null): array
+    public function asRhinoJson($user = null, array $requestedComputedAttributes = []): array
     {
         // Set flag so getHidden() returns [] — we handle filtering explicitly below.
         $this->asRhinoJsonActive = true;
@@ -166,6 +166,13 @@ trait HidableColumns
         if (is_array($computed) && !empty($computed)) {
             $result = array_merge($result, $computed);
         }
+
+        // Merge the OPT-IN record-level computed attributes the client selected
+        // via ?computed_attributes=. Nothing is evaluated unless it was asked
+        // for by name, so declaring an expensive attribute costs nothing on the
+        // requests that don't want it. Merged before policy filtering, so the
+        // blacklist/whitelist below still governs them.
+        $result = array_merge($result, $this->rhinoResolveRecordComputedAttributes($requestedComputedAttributes, $user));
 
         // Apply blacklist (base + additional + policy)
         $hidden = $this->resolveAllHiddenColumns($user);
@@ -221,6 +228,98 @@ trait HidableColumns
     public function rhinoComputedAttributes(): array
     {
         return [];
+    }
+
+    /**
+     * Override this method to declare OPT-IN record-level computed attributes.
+     *
+     * Unlike rhinoComputedAttributes(), nothing here is evaluated unless the
+     * client names it in `?computed_attributes=a,b` on index/show/trashed —
+     * so expensive per-row work is only paid for when it is actually wanted.
+     *
+     * Return a map of attribute name => callable($record, $user).
+     *
+     * @example
+     * ```php
+     * public function rhinoRecordComputedAttributes(): array
+     * {
+     *     return [
+     *         'open_tickets_count' => fn ($record, $user) => $record->tickets()->whereNull('closed_at')->count(),
+     *         'avatar_url' => fn ($record, $user) => Storage::url($record->avatar_path),
+     *     ];
+     * }
+     * ```
+     *
+     * @return array<string, callable>
+     */
+    public function rhinoRecordComputedAttributes(): array
+    {
+        return [];
+    }
+
+    /**
+     * Override this method to declare COLLECTION-level computed attributes,
+     * served by `GET /api/{resource}/computed?attributes=a,b`.
+     *
+     * Each callable receives the fully scoped query (organization scope, global
+     * scopes, `?scope=`, `?filter[]=` and `?search=` already applied) plus the
+     * current user, and is evaluated ONCE for the whole collection — not once
+     * per row. This is the cheap way to expose aggregates such as counts.
+     *
+     * Declaring at least one attribute here is what registers the
+     * `/computed` route for the model.
+     *
+     * @example
+     * ```php
+     * public static function rhinoCollectionComputedAttributes(): array
+     * {
+     *     return [
+     *         'active_users_count' => fn ($query, $user) => $query->where('status', 'active')->count(),
+     *         'blocked_users_count' => fn ($query, $user) => $query->where('status', 'blocked')->count(),
+     *     ];
+     * }
+     * ```
+     *
+     * @return array<string, callable>
+     */
+    public static function rhinoCollectionComputedAttributes(): array
+    {
+        return [];
+    }
+
+    /**
+     * Evaluate the selected opt-in record-level computed attributes.
+     *
+     * Names that are not declared are silently skipped — the controller has
+     * already rejected unknown/forbidden names with a 403, and a direct
+     * asRhinoJson() caller should not be able to force an arbitrary call.
+     *
+     * @param  array<string>  $names
+     * @param  mixed  $user
+     * @return array<string, mixed>
+     */
+    protected function rhinoResolveRecordComputedAttributes(array $names, $user): array
+    {
+        if (empty($names)) {
+            return [];
+        }
+
+        $declared = $this->rhinoRecordComputedAttributes();
+        if (!is_array($declared) || empty($declared)) {
+            return [];
+        }
+
+        $resolved = [];
+        foreach ($names as $name) {
+            if (!is_string($name) || !array_key_exists($name, $declared)) {
+                continue;
+            }
+
+            $callback = $declared[$name];
+            $resolved[$name] = is_callable($callback) ? $callback($this, $user) : $callback;
+        }
+
+        return $resolved;
     }
 
     /**

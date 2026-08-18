@@ -80,7 +80,7 @@ class GlobalController extends Controller
      *
      * Models without HidableColumns fall back to toArray().
      */
-    protected function serializeRecord($record): array
+    protected function serializeRecord($record, array $computedAttributes = []): array
     {
         if (method_exists($record, 'asRhinoJson')) {
             try {
@@ -88,7 +88,7 @@ class GlobalController extends Controller
             } catch (\InvalidArgumentException $e) {
                 $user = auth()->user();
             }
-            return $record->asRhinoJson($user);
+            return $record->asRhinoJson($user, $computedAttributes);
         }
 
         return $record->toArray();
@@ -96,10 +96,16 @@ class GlobalController extends Controller
 
     /**
      * Serialize a collection of records using serializeRecord.
+     *
+     * @param  array<string>  $computedAttributes  Opt-in record-level computed
+     *   attributes selected by the client via `?computed_attributes=`.
      */
-    protected function serializeCollection($records): array
+    protected function serializeCollection($records, array $computedAttributes = []): array
     {
-        return collect($records)->map(fn ($record) => $this->serializeRecord($record))->values()->all();
+        return collect($records)
+            ->map(fn ($record) => $this->serializeRecord($record, $computedAttributes))
+            ->values()
+            ->all();
     }
 
     // ------------------------------------------------------------------
@@ -110,6 +116,11 @@ class GlobalController extends Controller
     {
         $this->resolveModelClass($this->getModelSlug($request));
         Gate::forUser(auth('sanctum')->user())->authorize('viewAny', $this->modelClass::class);
+
+        $computedAttributes = $this->resolveRequestedComputedAttributes($request);
+        if ($computedAttributes instanceof \Illuminate\Http\JsonResponse) {
+            return $computedAttributes;
+        }
 
         $query = QueryBuilder::for($this->modelClass::class);
 
@@ -157,14 +168,14 @@ class GlobalController extends Controller
 
             $paginator = $query->paginate($perPage);
 
-            return response()->json(['data' => $this->serializeCollection($paginator->items())])
+            return response()->json(['data' => $this->serializeCollection($paginator->items(), $computedAttributes)])
                 ->header('X-Current-Page', $paginator->currentPage())
                 ->header('X-Last-Page', $paginator->lastPage())
                 ->header('X-Per-Page', $paginator->perPage())
                 ->header('X-Total', $paginator->total());
         }
 
-        return response()->json(['data' => $this->serializeCollection($query->get())]);
+        return response()->json(['data' => $this->serializeCollection($query->get(), $computedAttributes)]);
     }
 
     public function store(Request $request)
@@ -241,6 +252,11 @@ class GlobalController extends Controller
         $object = $query->firstOrFail();
         Gate::forUser(auth('sanctum')->user())->authorize('view', $object);
 
+        $computedAttributes = $this->resolveRequestedComputedAttributes($request);
+        if ($computedAttributes instanceof \Illuminate\Http\JsonResponse) {
+            return $computedAttributes;
+        }
+
         if (property_exists($this->modelClass, 'allowedFields')) {
             $query = $query->allowedFields($this->modelClass::$allowedFields);
         }
@@ -254,7 +270,7 @@ class GlobalController extends Controller
 
         $model = $query->firstOrFail();
 
-        return response()->json($this->serializeRecord($model));
+        return response()->json($this->serializeRecord($model, $computedAttributes));
     }
 
     public function update(Request $request)
@@ -360,6 +376,206 @@ class GlobalController extends Controller
     // These endpoints are only registered for models that use SoftDeletes.
     // ------------------------------------------------------------------
 
+    // ------------------------------------------------------------------
+    // Computed Attributes
+    // ------------------------------------------------------------------
+
+    /**
+     * GET /api/{resource}/computed?attributes=a,b
+     *
+     * Collection-level computed attributes: each declared callable is evaluated
+     * ONCE over the whole (scoped + filtered) collection instead of once per
+     * row, which is what makes aggregates such as `active_users_count` cheap.
+     *
+     * The query handed to each callable has the organization scope, the model's
+     * global scopes, `?scope=`, `?filter[]=` and `?search=` already applied — so
+     * the numbers describe exactly the set `index` would have listed. Sorting,
+     * sparse fieldsets, includes and pagination are deliberately NOT applied.
+     *
+     * Omitting `?attributes=` returns every declared attribute the policy allows.
+     */
+    public function computed(Request $request)
+    {
+        $this->resolveModelClass($this->getModelSlug($request));
+        $user = auth('sanctum')->user();
+        Gate::forUser($user)->authorize('viewAny', $this->modelClass::class);
+
+        $declared = $this->collectionComputedAttributes();
+
+        $names = $this->resolveRequestedCollectionAttributes($request, $declared, $user);
+        if ($names instanceof \Illuminate\Http\JsonResponse) {
+            return $names;
+        }
+
+        $query = QueryBuilder::for($this->modelClass::class);
+
+        // Apply organization scope if multi-tenant is enabled
+        $this->applyOrganizationScope($query);
+
+        if ($scopeError = $this->applyNamedScope($query, $request)) {
+            return $scopeError;
+        }
+
+        if (property_exists($this->modelClass, 'allowedFilters')) {
+            $query = $query->allowedFilters($this->normalizeFilters($this->modelClass::$allowedFilters));
+        } elseif ($request->has('filters')) {
+            return response()->json(['message' => 'Filters are not allowed'], 403);
+        }
+
+        $this->applySearch($query, $request);
+
+        $data = [];
+        foreach ($names as $name) {
+            $callback = $declared[$name];
+            // Every attribute gets its OWN clone so one callable's constraints
+            // can never leak into the next one's result.
+            $data[$name] = is_callable($callback)
+                ? $callback($query->clone()->getEloquentBuilder(), $user)
+                : $callback;
+        }
+
+        return response()->json(['data' => $data]);
+    }
+
+    /**
+     * The model's declared collection-level computed attributes (name => callable).
+     *
+     * @return array<string, mixed>
+     */
+    protected function collectionComputedAttributes(): array
+    {
+        if (! method_exists($this->modelClass, 'rhinoCollectionComputedAttributes')) {
+            return [];
+        }
+
+        $declared = $this->modelClass::rhinoCollectionComputedAttributes();
+
+        return is_array($declared) ? $declared : [];
+    }
+
+    /**
+     * Parse and authorize `?attributes=a,b` for the /computed endpoint.
+     *
+     * Returns the validated list of names, or a 403 JsonResponse. An undeclared
+     * name and a policy-denied name produce the SAME error so the endpoint never
+     * reveals which attributes a model declares.
+     *
+     * @param  array<string, mixed>  $declared
+     * @return array<string>|\Illuminate\Http\JsonResponse
+     */
+    protected function resolveRequestedCollectionAttributes(Request $request, array $declared, $user)
+    {
+        $raw = $request->input('attributes');
+
+        // Reject non-string input (?attributes[]=x) before any interpolation.
+        if ($raw !== null && ! is_string($raw)) {
+            return response()->json(['message' => 'Computed attributes are not allowed'], 403);
+        }
+
+        if ($raw === null || trim($raw) === '') {
+            // No selection: every declared attribute the policy allows.
+            return array_values(array_filter(
+                array_keys($declared),
+                fn ($name) => $this->computedAttributeAllowed($name, $user)
+            ));
+        }
+
+        $names = $this->parseAttributeList($raw);
+
+        foreach ($names as $name) {
+            if (! array_key_exists($name, $declared) || ! $this->computedAttributeAllowed($name, $user)) {
+                return response()->json(['message' => "Computed attribute '{$name}' is not allowed"], 403);
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Parse and authorize `?computed_attributes=a,b` for index/show/trashed —
+     * the OPT-IN record-level computed attributes.
+     *
+     * Returns the validated list of names, or a 403 JsonResponse. Absent or
+     * empty means "none", which is byte-for-byte the pre-feature behavior.
+     *
+     * @return array<string>|\Illuminate\Http\JsonResponse
+     */
+    protected function resolveRequestedComputedAttributes(Request $request)
+    {
+        $raw = $request->input('computed_attributes');
+
+        if ($raw === null || $raw === '') {
+            return [];
+        }
+
+        // Reject non-string input (?computed_attributes[]=x).
+        if (! is_string($raw)) {
+            return response()->json(['message' => 'Computed attributes are not allowed'], 403);
+        }
+
+        $names = $this->parseAttributeList($raw);
+        if (empty($names)) {
+            return [];
+        }
+
+        $declared = method_exists($this->modelClass, 'rhinoRecordComputedAttributes')
+            ? $this->modelClass->rhinoRecordComputedAttributes()
+            : [];
+        $declared = is_array($declared) ? $declared : [];
+
+        $user = auth('sanctum')->user();
+
+        foreach ($names as $name) {
+            if (! array_key_exists($name, $declared) || ! $this->computedAttributeAllowed($name, $user)) {
+                return response()->json(['message' => "Computed attribute '{$name}' is not allowed"], 403);
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Split a comma-separated attribute list, trimming blanks and duplicates.
+     *
+     * @return array<string>
+     */
+    protected function parseAttributeList(string $raw): array
+    {
+        $names = array_map('trim', explode(',', $raw));
+
+        return array_values(array_unique(array_filter($names, fn ($name) => $name !== '')));
+    }
+
+    /**
+     * Whether the policy lets this user see a computed attribute.
+     *
+     * Computed attributes go through the SAME gate as columns:
+     * `hiddenAttributesForShow()` blacklists, and `permittedAttributesForShow()`
+     * whitelists unless it returns the `['*']` default.
+     */
+    protected function computedAttributeAllowed(string $name, $user): bool
+    {
+        try {
+            $policy = Gate::getPolicyFor($this->modelClass);
+        } catch (\Exception $e) {
+            // Policy resolution failed — serialization applies the same filters
+            // again downstream, so nothing can leak through this fallback.
+            return true;
+        }
+
+        if (! $policy instanceof HasPermittedAttributes) {
+            return true;
+        }
+
+        if (in_array($name, $policy->hiddenAttributesForShow($user), true)) {
+            return false;
+        }
+
+        $permitted = $policy->permittedAttributesForShow($user);
+
+        return $permitted === ['*'] || in_array($name, $permitted, true);
+    }
+
     /**
      * List soft-deleted (trashed) records.
      */
@@ -369,6 +585,11 @@ class GlobalController extends Controller
         $this->ensureSoftDeletes();
 
         Gate::forUser(auth('sanctum')->user())->authorize('viewTrashed', $this->modelClass::class);
+
+        $computedAttributes = $this->resolveRequestedComputedAttributes($request);
+        if ($computedAttributes instanceof \Illuminate\Http\JsonResponse) {
+            return $computedAttributes;
+        }
 
         $query = QueryBuilder::for($this->modelClass::class)->onlyTrashed();
 
@@ -413,14 +634,14 @@ class GlobalController extends Controller
 
             $paginator = $query->paginate($perPage);
 
-            return response()->json(['data' => $this->serializeCollection($paginator->items())])
+            return response()->json(['data' => $this->serializeCollection($paginator->items(), $computedAttributes)])
                 ->header('X-Current-Page', $paginator->currentPage())
                 ->header('X-Last-Page', $paginator->lastPage())
                 ->header('X-Per-Page', $paginator->perPage())
                 ->header('X-Total', $paginator->total());
         }
 
-        return response()->json(['data' => $this->serializeCollection($query->get())]);
+        return response()->json(['data' => $this->serializeCollection($query->get(), $computedAttributes)]);
     }
 
     /**

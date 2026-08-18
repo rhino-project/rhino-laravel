@@ -239,6 +239,19 @@ class ExportPostmanCommand extends Command
         $allowedScopes = $this->getModelProperty($modelClass, 'allowedScopes', []);
         $defaultSort = $this->getModelProperty($modelClass, 'defaultSort', null);
 
+        // Computed attributes: names only (the callables never leave the server).
+        $collectionComputed = [];
+        if (method_exists($modelClass, 'rhinoCollectionComputedAttributes')) {
+            $declared = $modelClass::rhinoCollectionComputedAttributes();
+            $collectionComputed = is_array($declared) ? array_keys($declared) : [];
+        }
+
+        $recordComputed = [];
+        if (method_exists($modelClass, 'rhinoRecordComputedAttributes')) {
+            $declared = app()->make($modelClass)->rhinoRecordComputedAttributes();
+            $recordComputed = is_array($declared) ? array_keys($declared) : [];
+        }
+
         $validationRules = $this->getModelProperty($modelClass, 'validationRules', []);
         $validationRulesStore = $this->getModelProperty($modelClass, 'validationRulesStore', []);
         $validationRulesUpdate = $this->getModelProperty($modelClass, 'validationRulesUpdate', []);
@@ -253,6 +266,8 @@ class ExportPostmanCommand extends Command
             'allowedIncludes' => is_array($allowedIncludes) ? $allowedIncludes : [],
             'allowedSearch' => is_array($allowedSearch) ? $allowedSearch : [],
             'allowedScopes' => is_array($allowedScopes) ? $allowedScopes : [],
+            'collectionComputedAttributes' => $collectionComputed,
+            'recordComputedAttributes' => $recordComputed,
             'defaultSort' => $defaultSort,
             'validationRules' => $validationRules,
             'validationRulesStore' => $validationRulesStore,
@@ -308,6 +323,13 @@ class ExportPostmanCommand extends Command
             ];
         }
 
+        if (! empty($modelMeta['collectionComputedAttributes']) && ! in_array('computed', $exceptActions)) {
+            $folders[] = [
+                'name' => 'Computed Attributes',
+                'item' => $this->buildComputedRequests($basePath, $modelMeta),
+            ];
+        }
+
         if ($modelMeta['usesSoftDeletes']) {
             if (! in_array('trashed', $exceptActions)) {
                 $folders[] = [
@@ -330,6 +352,42 @@ class ExportPostmanCommand extends Command
         }
 
         return $folders;
+    }
+
+    /**
+     * Requests for GET {resource}/computed — the collection-level aggregates.
+     */
+    private function buildComputedRequests(string $basePath, array $modelMeta): array
+    {
+        $headers = $this->defaultHeaders();
+        $path = $basePath . '/computed';
+        $attributes = $modelMeta['collectionComputedAttributes'];
+
+        $requests = [
+            $this->requestItem('All computed attributes', 'GET', $path, [], $headers),
+        ];
+
+        foreach ($attributes as $attribute) {
+            $requests[] = $this->requestItem(
+                'Computed: ' . $attribute,
+                'GET',
+                $path,
+                ['attributes' => $attribute],
+                $headers
+            );
+        }
+
+        if (count($attributes) > 1) {
+            $requests[] = $this->requestItem(
+                'Computed: multiple attributes',
+                'GET',
+                $path,
+                ['attributes' => implode(',', $attributes)],
+                $headers
+            );
+        }
+
+        return $requests;
     }
 
     private function basePath(string $slug, string $groupPrefix): string
@@ -383,6 +441,16 @@ class ExportPostmanCommand extends Command
                 'GET',
                 $basePath,
                 ['fields[' . $slug . ']' => implode(',', array_slice($modelMeta['allowedFields'], 0, 5))],
+                $headers
+            );
+        }
+
+        foreach ($modelMeta['recordComputedAttributes'] ?? [] as $attribute) {
+            $requests[] = $this->requestItem(
+                'With computed attribute ' . $attribute,
+                'GET',
+                $basePath,
+                ['computed_attributes' => $attribute],
                 $headers
             );
         }
@@ -443,6 +511,17 @@ class ExportPostmanCommand extends Command
                 $headers
             );
         }
+
+        foreach ($modelMeta['recordComputedAttributes'] ?? [] as $attribute) {
+            $requests[] = $this->requestItem(
+                'Show with computed attribute ' . $attribute,
+                'GET',
+                $path,
+                ['computed_attributes' => $attribute],
+                $headers
+            );
+        }
+
         return $requests;
     }
 

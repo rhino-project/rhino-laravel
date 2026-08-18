@@ -298,6 +298,16 @@ foreach ($sortedRouteGroups as $groupKey => $groupConfig) {
             class_uses_recursive($modelClass)
         );
 
+        // The /computed endpoint exists only for models that actually declare
+        // collection-level computed attributes. Models that don't are byte-for-
+        // byte unchanged — in particular, `/{slug}/computed` keeps resolving to
+        // show() for a record whose route key is literally "computed".
+        $hasComputedAttributes = false;
+        if (method_exists($modelClass, 'rhinoCollectionComputedAttributes')) {
+            $declaredComputed = $modelClass::rhinoCollectionComputedAttributes();
+            $hasComputedAttributes = is_array($declaredComputed) && ! empty($declaredComputed);
+        }
+
         // Build the route registrar. When the group declares a domain, the
         // group's routes are constrained to that host (e.g. 'admin.example.com'
         // or a parameterized '{organization}.example.com'). Domain parameters
@@ -307,7 +317,7 @@ foreach ($sortedRouteGroups as $groupKey => $groupConfig) {
 
         $registrar
             ->middleware($middleware)
-            ->group(function () use ($slug, $groupKey, $actionMiddleware, $exceptActions, $usesSoftDeletes) {
+            ->group(function () use ($slug, $groupKey, $actionMiddleware, $exceptActions, $usesSoftDeletes, $hasComputedAttributes) {
                 if (!in_array('index', $exceptActions)) {
                     Route::get('/', [GlobalController::class, 'index'])
                         ->defaults('model', $slug)
@@ -322,6 +332,15 @@ foreach ($sortedRouteGroups as $groupKey => $groupConfig) {
                         ->defaults('route_group', $groupKey)
                         ->middleware($actionMiddleware['store'] ?? [])
                         ->name("{$groupKey}.{$slug}.store");
+                }
+
+                // Computed attributes — registered BEFORE {id} routes to avoid wildcard capture
+                if ($hasComputedAttributes && !in_array('computed', $exceptActions)) {
+                    Route::get('computed', [GlobalController::class, 'computed'])
+                        ->defaults('model', $slug)
+                        ->defaults('route_group', $groupKey)
+                        ->middleware($actionMiddleware['computed'] ?? [])
+                        ->name("{$groupKey}.{$slug}.computed");
                 }
 
                 // Soft Delete routes — registered BEFORE {id} routes to avoid wildcard capture
