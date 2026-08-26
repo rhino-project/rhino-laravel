@@ -374,9 +374,14 @@ class InstallCommand extends Command
 
         $config = require $configPath;
 
-        $config['multi_tenant'] = [
-            'organization_identifier_column' => $identifierColumn,
-        ];
+        // Merge, don't replace: the published block also carries 'enabled',
+        // which must survive re-serialization so a single-tenant admin panel
+        // can still find (and flip) it in its own config file.
+        $config['multi_tenant'] = array_merge(
+            ['enabled' => true],
+            $config['multi_tenant'] ?? [],
+            ['organization_identifier_column' => $identifierColumn],
+        );
 
         $config['route_groups'] = [
             'tenant' => [

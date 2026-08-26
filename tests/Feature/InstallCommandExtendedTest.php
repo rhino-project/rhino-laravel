@@ -142,6 +142,49 @@ PHP;
         $this->assertStringContainsString('tenant', $content);
     }
 
+    public function test_update_config_preserves_a_disabled_multi_tenant_flag(): void
+    {
+        $this->writeRhinoConfig("'enabled' => false,\n        'organization_identifier_column' => 'id',");
+
+        $this->invokeMethod('updateConfig', ['slug']);
+
+        $config = require config_path('rhino.php');
+        $this->assertFalse($config['multi_tenant']['enabled']);
+        $this->assertSame('slug', $config['multi_tenant']['organization_identifier_column']);
+    }
+
+    public function test_update_config_writes_the_multi_tenant_flag_when_absent(): void
+    {
+        $this->writeRhinoConfig("'organization_identifier_column' => 'id',");
+
+        $this->invokeMethod('updateConfig', ['slug']);
+
+        $config = require config_path('rhino.php');
+        $this->assertTrue($config['multi_tenant']['enabled']);
+    }
+
+    /** Write a minimal published rhino.php with the given multi_tenant body. */
+    protected function writeRhinoConfig(string $multiTenantBody): void
+    {
+        $configDir = $this->tempDir . '/config';
+        File::ensureDirectoryExists($configDir);
+        $this->app->useConfigPath($configDir);
+
+        File::put($configDir . '/rhino.php', <<<PHP
+        <?php
+
+        return [
+            'models' => [],
+            'route_groups' => [],
+            'multi_tenant' => [
+                {$multiTenantBody}
+            ],
+        ];
+        PHP);
+
+        $this->setProperty('stubPath', realpath(__DIR__ . '/../../stubs/multi-tenant'));
+    }
+
     public function test_update_config_does_nothing_when_config_missing(): void
     {
         $this->app->useConfigPath($this->tempDir . '/nonexistent');
