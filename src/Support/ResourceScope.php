@@ -19,7 +19,10 @@ class ResourceScope
      *
      * Organization is taken from the current Rhino context (explicit override
      * if active, otherwise the request attribute). Fails CLOSED: an
-     * organization-scoped model with no organization context throws.
+     * organization-scoped model with no organization context throws — unless
+     * the app is single-tenant (config('rhino.multi_tenant.enabled') === false),
+     * in which case no organization filter is applied at all and access is left
+     * to the app's own user-aware global scopes.
      */
     public function query(string $modelClass): Builder
     {
@@ -34,11 +37,13 @@ class ResourceScope
         $query = $modelClass::query()->withoutGlobalScope('organization');
 
         if ($this->isOrganizationScoped($model)) {
-            if (! $org) {
+            if ($org) {
+                // An explicit organization is always honored, even in a
+                // single-tenant app — the caller asked for that tenant.
+                $this->scopeQueryToOrganization($query, $model, $org);
+            } elseif ($this->multiTenancyEnabled()) {
                 throw new MissingTenantContext($modelClass); // fail closed
             }
-
-            $this->scopeQueryToOrganization($query, $model, $org);
         }
 
         return $query;
@@ -59,5 +64,14 @@ class ResourceScope
         }
 
         return $query;
+    }
+
+    /**
+     * Whether organization scoping is active for this app. Defaults to true so
+     * installs whose published config predates the flag keep failing closed.
+     */
+    protected function multiTenancyEnabled(): bool
+    {
+        return config('rhino.multi_tenant.enabled', true) !== false;
     }
 }

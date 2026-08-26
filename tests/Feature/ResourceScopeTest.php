@@ -610,6 +610,122 @@ class ResourceScopeTest extends TestCase
         $this->assertSame($manual, $rhino);
         $this->assertCount(2, $rhino);
     }
+
+    // ======================================================================
+    // 16. Single-tenant apps (config('rhino.multi_tenant.enabled') === false)
+    // ======================================================================
+
+    /** Turn the app-wide organization scoping off (admin-panel style app). */
+    protected function disableMultiTenancy(): void
+    {
+        config(['rhino.multi_tenant.enabled' => false]);
+    }
+
+    public function test_single_tenant_column_model_returns_every_org_and_does_not_throw(): void
+    {
+        $this->disableMultiTenancy();
+        $this->seedTasks();
+        $this->actingAs($this->userA, 'sanctum');
+        $this->clearRequestOrg(); // admin panel: no tenant route group
+
+        $titles = Rhino::query(ScopeTask::class)->pluck('title')->sort()->values()->all();
+        $this->assertSame(['A high', 'A low', 'B high'], $titles);
+    }
+
+    public function test_single_tenant_relationship_model_returns_every_org_and_does_not_throw(): void
+    {
+        $this->disableMultiTenancy();
+        $this->seedRelationshipChain();
+        $this->actingAs($this->userA, 'sanctum');
+        $this->clearRequestOrg();
+
+        // Indirect tenancy (comment -> post -> blog -> org) must be un-filtered
+        // too, not just the direct organization_id column.
+        $bodies = Rhino::query(ScopeComment::class)->pluck('body')->sort()->values()->all();
+        $this->assertSame(['A1', 'A2', 'B1'], $bodies);
+    }
+
+    /**
+     * The whole point of the flag: the app's own user-aware {Model}Scope is
+     * what decides access, and it still runs.
+     */
+    public function test_single_tenant_ambient_query_applies_user_aware_scope_from_the_session(): void
+    {
+        $this->disableMultiTenancy();
+        ScopeOwnedTaskScope::$enabled = true;
+
+        ScopeOwnedTask::forceCreate(['organization_id' => $this->orgA->id, 'owner_id' => $this->userA->id, 'title' => 'A owns in org A']);
+        ScopeOwnedTask::forceCreate(['organization_id' => $this->orgB->id, 'owner_id' => $this->userA->id, 'title' => 'A owns in org B']);
+        ScopeOwnedTask::forceCreate(['organization_id' => $this->orgA->id, 'owner_id' => $this->userB->id, 'title' => 'B owns in org A']);
+
+        $this->actingAs($this->userA, 'sanctum');
+        $this->clearRequestOrg();
+
+        // No org filter (both orgs), but only the session user's rows.
+        $titles = Rhino::query(ScopeOwnedTask::class)->pluck('title')->sort()->values()->all();
+        $this->assertSame(['A owns in org A', 'A owns in org B'], $titles);
+    }
+
+    /** forUser() with no organization is the command/job form of the same thing. */
+    public function test_single_tenant_for_user_without_organization_applies_user_aware_scope(): void
+    {
+        $this->disableMultiTenancy();
+        ScopeOwnedTaskScope::$enabled = true;
+
+        ScopeOwnedTask::forceCreate(['organization_id' => $this->orgA->id, 'owner_id' => $this->userB->id, 'title' => 'B owns in org A']);
+        ScopeOwnedTask::forceCreate(['organization_id' => $this->orgB->id, 'owner_id' => $this->userB->id, 'title' => 'B owns in org B']);
+        ScopeOwnedTask::forceCreate(['organization_id' => $this->orgA->id, 'owner_id' => $this->userA->id, 'title' => 'A owns in org A']);
+
+        $this->clearRequestOrg(); // console/job: no session, no request org
+
+        $titles = Rhino::forUser($this->userB)->query(ScopeOwnedTask::class)
+            ->pluck('title')->sort()->values()->all();
+        $this->assertSame(['B owns in org A', 'B owns in org B'], $titles);
+    }
+
+    public function test_single_tenant_scoped_query_still_applies_the_named_scope(): void
+    {
+        $this->disableMultiTenancy();
+        $this->seedTasks(); // org A: 10, 200; org B: 300
+        $this->actingAs($this->userA, 'sanctum');
+        $this->clearRequestOrg();
+
+        // highValue = points >= 100, now across every organization.
+        $titles = Rhino::scopedQuery(ScopeTask::class, 'highValue')->pluck('title')->sort()->values()->all();
+        $this->assertSame(['A high', 'B high'], $titles);
+    }
+
+    /** An explicit organization still isolates, so a mixed app can opt back in. */
+    public function test_single_tenant_explicit_in_organization_still_isolates(): void
+    {
+        $this->disableMultiTenancy();
+        $this->seedTasks();
+        $this->clearRequestOrg();
+
+        $this->assertSame(2, Rhino::forUser($this->userA)->inOrganization($this->orgA)->query(ScopeTask::class)->count());
+        $this->assertSame(1, Rhino::forUser($this->userB)->inOrganization($this->orgB)->query(ScopeTask::class)->count());
+    }
+
+    /** Default (flag absent / true) is unchanged: forUser() alone still fails closed. */
+    public function test_multi_tenant_for_user_without_organization_still_fails_closed(): void
+    {
+        $this->seedTasks();
+        $this->clearRequestOrg();
+
+        $this->expectException(MissingTenantContext::class);
+        Rhino::forUser($this->userA)->query(ScopeTask::class);
+    }
+
+    public function test_multi_tenant_is_the_default_when_the_flag_is_absent(): void
+    {
+        config(['rhino.multi_tenant' => ['organization_identifier_column' => 'id']]);
+        $this->seedTasks();
+        $this->actingAs($this->userA, 'sanctum');
+        $this->clearRequestOrg();
+
+        $this->expectException(MissingTenantContext::class);
+        Rhino::query(ScopeTask::class);
+    }
 }
 
 // ==========================================================================

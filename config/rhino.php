@@ -63,6 +63,17 @@ return [
         'enforce_group_membership' => false,
     ],
     'multi_tenant' => [
+        // Master flag for organization scoping. Default ON: behavior is
+        // byte-for-byte what it is today — Rhino::query() fails closed when an
+        // organization-scoped model is queried with no organization context.
+        // Turn it OFF for single-tenant apps (e.g. an admin panel where every
+        // operator sees every organization's rows and access is decided by
+        // roles/scopes instead). With it OFF, Rhino::query() and
+        // Rhino::scopedQuery() skip the organization filter and no longer throw
+        // MissingTenantContext; the app's own user-aware global scopes
+        // (App\Models\Scopes\{Model}Scope) and named scopes still apply, and an
+        // explicit Rhino::forUser(...)->inOrganization(...) still scopes.
+        'enabled' => true,
         'organization_identifier_column' => 'id', // Options: 'id', 'slug', or any other column name
     ],
 

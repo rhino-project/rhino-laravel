@@ -13,7 +13,8 @@ class MissingTenantContext extends \RuntimeException
     {
         parent::__construct(
             "Rhino::query({$modelClass}) requires an organization context but none is set. "
-            . 'Use Rhino::forUser(...)->inOrganization(...) outside a tenant request.'
+            . 'Use Rhino::forUser(...)->inOrganization(...) outside a tenant request, '
+            . "or set config('rhino.multi_tenant.enabled') to false if this app is single-tenant."
         );
     }
 }
