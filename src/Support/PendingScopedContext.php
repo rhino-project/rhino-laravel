@@ -7,10 +7,11 @@ use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
- * Fluent explicit-context builder returned by Rhino::forUser(). Lets callers
- * scope resource queries by an explicit (user, organization) outside a tenant
- * HTTP request (jobs, commands, tests) — the org scope is applied from the
- * passed organization, NOT from the route.
+ * Fluent explicit-context builder returned by Rhino::forUser() and
+ * Rhino::inRouteGroup(). Lets callers scope resource queries by an explicit
+ * (user, organization, route group) outside a tenant HTTP request (jobs,
+ * commands, tests) — the org scope is applied from the passed organization,
+ * NOT from the route.
  */
 class PendingScopedContext
 {
@@ -18,10 +19,13 @@ class PendingScopedContext
 
     protected $organization;
 
-    public function __construct(?Authenticatable $user, $organization = null)
+    protected ?string $routeGroup;
+
+    public function __construct(?Authenticatable $user, $organization = null, ?string $routeGroup = null)
     {
         $this->user = $user;
         $this->organization = $organization;
+        $this->routeGroup = $routeGroup;
     }
 
     /**
@@ -30,6 +34,32 @@ class PendingScopedContext
     public function inOrganization($organization): self
     {
         $this->organization = $organization;
+
+        return $this;
+    }
+
+    /**
+     * Act as the named route group for this context.
+     *
+     * This is how code with no request — a queued job, a console command, a
+     * scheduled task — reaches a group declared 'tenant' => false: the group
+     * still decides the boundary, the caller only says which group it is acting
+     * as. Naming a group that is NOT declared non-tenant changes nothing: the
+     * query still fails closed without an organization.
+     */
+    public function inRouteGroup(string $routeGroup): self
+    {
+        $this->routeGroup = $routeGroup;
+
+        return $this;
+    }
+
+    /**
+     * Set the explicit user for this context.
+     */
+    public function forUser(?Authenticatable $user): self
+    {
+        $this->user = $user;
 
         return $this;
     }
@@ -65,7 +95,7 @@ class PendingScopedContext
      */
     public function run(Closure $callback)
     {
-        return app(RhinoContext::class)->run($this->user, $this->organization, $callback);
+        return app(RhinoContext::class)->run($this->user, $this->organization, $callback, $this->routeGroup);
     }
 
     /**
@@ -81,7 +111,7 @@ class PendingScopedContext
         $hadOrg = $request->attributes->has('organization');
         $previousOrg = $request->attributes->get('organization');
 
-        $context->push($this->user, $this->organization);
+        $context->push($this->user, $this->organization, $this->routeGroup);
 
         if ($this->user) {
             auth('sanctum')->setUser($this->user);

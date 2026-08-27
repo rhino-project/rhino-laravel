@@ -20,9 +20,11 @@ class ResourceScope
      * Organization is taken from the current Rhino context (explicit override
      * if active, otherwise the request attribute). Fails CLOSED: an
      * organization-scoped model with no organization context throws — unless
-     * the request is served by a route group declared non-tenant
-     * ('tenant' => false), in which case no organization filter is applied at
-     * all and access is left to the app's own user-aware global scopes.
+     * the query belongs to a route group declared non-tenant
+     * ('tenant' => false) — either because the request is served by that group
+     * or because the caller said so with Rhino::inRouteGroup(...) — in which
+     * case no organization filter is applied at all and access is left to the
+     * app's own user-aware global scopes.
      */
     public function query(string $modelClass): Builder
     {
@@ -73,9 +75,9 @@ class ResourceScope
      * group), so the resolver applies no organization filter and does not throw.
      *
      * Defaults to TRUE for every other case — an unknown group, an untagged
-     * route, or no request at all (queued jobs, console commands) — so the
-     * resolver keeps failing closed wherever the group is not provably
-     * non-tenant.
+     * route, or no group at all (a queued job or console command that did not
+     * name one) — so the resolver keeps failing closed wherever the group is
+     * not provably non-tenant.
      */
     protected function currentGroupIsTenant(): bool
     {
@@ -89,19 +91,14 @@ class ResourceScope
     }
 
     /**
-     * The route group serving the current request, read from the matched
+     * The route group this query belongs to: an explicit
+     * Rhino::inRouteGroup(...) context if one is active, otherwise the matched
      * route's 'route_group' default — the same source EnforceGroupMembership,
      * ResourcePolicy and AuthController resolve the group from. Null outside a
      * request, when no route matched, or when the route carries no group tag.
      */
     protected function currentRouteGroup(): ?string
     {
-        if (! app()->bound('request')) {
-            return null;
-        }
-
-        $group = request()->route()?->defaults['route_group'] ?? null;
-
-        return is_string($group) && $group !== '' ? $group : null;
+        return app(RhinoContext::class)->routeGroup();
     }
 }

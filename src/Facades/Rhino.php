@@ -9,6 +9,7 @@ use Rhino\Support\RhinoManager;
  * @method static \Illuminate\Database\Eloquent\Builder query(string $modelClass)
  * @method static \Illuminate\Database\Eloquent\Builder scopedQuery(string $modelClass, ?string $namedScope = null)
  * @method static \Rhino\Support\PendingScopedContext forUser(\Illuminate\Contracts\Auth\Authenticatable $user, $organization = null)
+ * @method static \Rhino\Support\PendingScopedContext inRouteGroup(string $routeGroup)
  * @method static \Rhino\Support\RhinoContext context()
  * @method static string routeKeyName(object|string $model)
  *

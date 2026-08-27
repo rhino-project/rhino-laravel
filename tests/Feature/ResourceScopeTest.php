@@ -816,6 +816,167 @@ class ResourceScopeTest extends TestCase
     }
 
     // ----------------------------------------------------------------------
+    // Naming the group explicitly (jobs, console commands, tests)
+    // ----------------------------------------------------------------------
+
+    /**
+     * The job case: no request resolves a group, so the caller names the one it
+     * is acting as. The group's own config still decides the boundary.
+     */
+    public function test_in_route_group_lets_a_job_query_across_organizations(): void
+    {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+        $this->clearRequestOrg(); // console/job: no request org, no route
+
+        $titles = Rhino::inRouteGroup('admin')->query(ScopeTask::class)
+            ->pluck('title')->sort()->values()->all();
+
+        $this->assertSame(['A high', 'A low', 'B high'], $titles);
+    }
+
+    public function test_in_route_group_composes_with_for_user_and_keeps_the_user_aware_scope(): void
+    {
+        $this->configureAdminGroup();
+        ScopeOwnedTaskScope::$enabled = true;
+
+        ScopeOwnedTask::forceCreate(['organization_id' => $this->orgA->id, 'owner_id' => $this->userB->id, 'title' => 'B owns in org A']);
+        ScopeOwnedTask::forceCreate(['organization_id' => $this->orgB->id, 'owner_id' => $this->userB->id, 'title' => 'B owns in org B']);
+        ScopeOwnedTask::forceCreate(['organization_id' => $this->orgA->id, 'owner_id' => $this->userA->id, 'title' => 'A owns in org A']);
+
+        $this->clearRequestOrg();
+
+        $titles = Rhino::forUser($this->userB)->inRouteGroup('admin')->query(ScopeOwnedTask::class)
+            ->pluck('title')->sort()->values()->all();
+
+        // Every organization, but only this user's rows.
+        $this->assertSame(['B owns in org A', 'B owns in org B'], $titles);
+    }
+
+    /** Rhino::inRouteGroup(...)->forUser(...) is the same context, built the other way round. */
+    public function test_in_route_group_then_for_user_is_equivalent(): void
+    {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+        $this->clearRequestOrg();
+
+        $count = Rhino::inRouteGroup('admin')->forUser($this->userA)->query(ScopeTask::class)->count();
+
+        $this->assertSame(3, $count);
+    }
+
+    public function test_in_route_group_applies_the_named_scope(): void
+    {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+        $this->clearRequestOrg();
+
+        $titles = Rhino::inRouteGroup('admin')->scopedQuery(ScopeTask::class, 'highValue')
+            ->pluck('title')->sort()->values()->all();
+
+        $this->assertSame(['A high', 'B high'], $titles);
+    }
+
+    /** Ambient calls inside run() see the named group too. */
+    public function test_in_route_group_run_covers_ambient_queries_inside_the_block(): void
+    {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+        $this->clearRequestOrg();
+
+        $count = Rhino::inRouteGroup('admin')->run(fn () => Rhino::query(ScopeTask::class)->count());
+
+        $this->assertSame(3, $count);
+    }
+
+    /** Naming a group is not a way around the config: a tenant group still throws. */
+    public function test_in_route_group_naming_a_tenant_group_still_fails_closed(): void
+    {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+        $this->clearRequestOrg();
+
+        $this->expectException(MissingTenantContext::class);
+        Rhino::inRouteGroup('tenant')->query(ScopeTask::class);
+    }
+
+    public function test_in_route_group_naming_an_unknown_group_still_fails_closed(): void
+    {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+        $this->clearRequestOrg();
+
+        $this->expectException(MissingTenantContext::class);
+        Rhino::inRouteGroup('does-not-exist')->query(ScopeTask::class);
+    }
+
+    /** An explicit organization still wins inside a non-tenant group. */
+    public function test_in_route_group_with_an_explicit_organization_still_isolates(): void
+    {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+        $this->clearRequestOrg();
+
+        $count = Rhino::forUser($this->userA)->inRouteGroup('admin')->inOrganization($this->orgA)
+            ->query(ScopeTask::class)->count();
+
+        $this->assertSame(2, $count);
+    }
+
+    /** The named group is popped: a later ambient query in the same worker still throws. */
+    public function test_in_route_group_does_not_leak_into_a_later_ambient_query(): void
+    {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+        $this->clearRequestOrg();
+
+        $this->assertSame(3, Rhino::inRouteGroup('admin')->query(ScopeTask::class)->count());
+
+        $this->expectException(MissingTenantContext::class);
+        Rhino::query(ScopeTask::class);
+    }
+
+    public function test_in_route_group_does_not_leak_out_of_run(): void
+    {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+        $this->clearRequestOrg();
+
+        Rhino::inRouteGroup('admin')->run(fn () => Rhino::query(ScopeTask::class)->count());
+
+        $this->expectException(MissingTenantContext::class);
+        Rhino::query(ScopeTask::class);
+    }
+
+    /**
+     * An explicit context ADDS to the request's group, it never erases it: a
+     * bare forUser() inside a non-tenant request keeps that request's group.
+     */
+    public function test_for_user_inside_a_non_tenant_request_keeps_the_requests_group(): void
+    {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+        $this->clearRequestOrg();
+        $this->actAsRouteGroup('admin');
+
+        $count = Rhino::forUser($this->userA)->query(ScopeTask::class)->count();
+
+        $this->assertSame(3, $count);
+    }
+
+    /** ...and it cannot manufacture one inside a tenant request either. */
+    public function test_for_user_inside_a_tenant_request_still_fails_closed(): void
+    {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+        $this->clearRequestOrg();
+        $this->actAsRouteGroup('tenant');
+
+        $this->expectException(MissingTenantContext::class);
+        Rhino::forUser($this->userA)->query(ScopeTask::class);
+    }
+
+    // ----------------------------------------------------------------------
     // End to end, through real routing
     // ----------------------------------------------------------------------
 

@@ -36,6 +36,19 @@ class RhinoManager
     }
 
     /**
+     * Begin an explicit context that acts as the named route group, for use
+     * where no route resolves one — a queued job, a console command, a test.
+     *
+     * The group's own 'tenant' key still decides the boundary: naming a group
+     * declared 'tenant' => false lets the query span every organization, while
+     * naming any other group keeps failing closed.
+     */
+    public function inRouteGroup(string $routeGroup): PendingScopedContext
+    {
+        return new PendingScopedContext(null, null, $routeGroup);
+    }
+
+    /**
      * The Rhino context singleton.
      */
     public function context(): RhinoContext

@@ -50,7 +50,14 @@ return [
         //       ->defaults('route_group', 'admin');
         //
         // Outside a request (queued jobs, console commands) no group resolves,
-        // so the resolver keeps failing closed there regardless of this key.
+        // so the resolver keeps failing closed unless the caller names the
+        // group it is acting as:
+        //
+        //   Rhino::inRouteGroup('admin')->query(Task::class);
+        //   Rhino::forUser($operator)->inRouteGroup('admin')->query(Task::class);
+        //
+        // The group's own 'tenant' key still decides: naming a tenant group
+        // there changes nothing, the query still fails closed.
         //
         // A group may opt into group-aware auth by setting 'auth' => true. When
         // set, the full auth route set (login, logout, password/recover,
