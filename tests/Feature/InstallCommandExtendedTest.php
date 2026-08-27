@@ -142,25 +142,25 @@ PHP;
         $this->assertStringContainsString('tenant', $content);
     }
 
-    public function test_update_config_preserves_a_disabled_multi_tenant_flag(): void
+    public function test_update_config_preserves_other_multi_tenant_keys(): void
     {
-        $this->writeRhinoConfig("'enabled' => false,\n        'organization_identifier_column' => 'id',");
+        $this->writeRhinoConfig("'organization_identifier_column' => 'id',\n        'custom_key' => 'kept',");
 
         $this->invokeMethod('updateConfig', ['slug']);
 
         $config = require config_path('rhino.php');
-        $this->assertFalse($config['multi_tenant']['enabled']);
         $this->assertSame('slug', $config['multi_tenant']['organization_identifier_column']);
+        $this->assertSame('kept', $config['multi_tenant']['custom_key']);
     }
 
-    public function test_update_config_writes_the_multi_tenant_flag_when_absent(): void
+    public function test_update_config_writes_the_identifier_column_into_an_empty_block(): void
     {
-        $this->writeRhinoConfig("'organization_identifier_column' => 'id',");
+        $this->writeRhinoConfig("");
 
         $this->invokeMethod('updateConfig', ['slug']);
 
         $config = require config_path('rhino.php');
-        $this->assertTrue($config['multi_tenant']['enabled']);
+        $this->assertSame('slug', $config['multi_tenant']['organization_identifier_column']);
     }
 
     /** Write a minimal published rhino.php with the given multi_tenant body. */

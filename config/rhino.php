@@ -27,9 +27,30 @@ return [
         // 'admin' => [
         //     'prefix' => '',
         //     'domain' => 'admin.example.com',
+        //     'tenant' => false,
         //     'middleware' => [],
         //     'models' => '*',
         // ],
+        //
+        // The optional 'tenant' key declares whether the group has a tenant
+        // boundary. It defaults to true: Rhino::query() inside the group fails
+        // closed, throwing MissingTenantContext when an organization-scoped
+        // model is queried with no organization resolved. Set it to false for a
+        // group that legitimately spans every organization — a back-office or
+        // admin group whose operators see all tenants' rows. In such a group
+        // Rhino::query() applies no organization filter and does not throw; the
+        // app's own user-aware global scopes, named scopes and policies still
+        // apply, and an explicit inOrganization() still scopes.
+        //
+        // The group is read from the matched route's 'route_group' default, the
+        // same value memberships and policies use. Rhino's generated CRUD routes
+        // carry it already; tag your own custom routes to place them in a group:
+        //
+        //   Route::get('admin/dashboard', [AdminDashboardController::class, 'summary'])
+        //       ->defaults('route_group', 'admin');
+        //
+        // Outside a request (queued jobs, console commands) no group resolves,
+        // so the resolver keeps failing closed there regardless of this key.
         //
         // A group may opt into group-aware auth by setting 'auth' => true. When
         // set, the full auth route set (login, logout, password/recover,
@@ -63,17 +84,6 @@ return [
         'enforce_group_membership' => false,
     ],
     'multi_tenant' => [
-        // Master flag for organization scoping. Default ON: behavior is
-        // byte-for-byte what it is today — Rhino::query() fails closed when an
-        // organization-scoped model is queried with no organization context.
-        // Turn it OFF for single-tenant apps (e.g. an admin panel where every
-        // operator sees every organization's rows and access is decided by
-        // roles/scopes instead). With it OFF, Rhino::query() and
-        // Rhino::scopedQuery() skip the organization filter and no longer throw
-        // MissingTenantContext; the app's own user-aware global scopes
-        // (App\Models\Scopes\{Model}Scope) and named scopes still apply, and an
-        // explicit Rhino::forUser(...)->inOrganization(...) still scopes.
-        'enabled' => true,
         'organization_identifier_column' => 'id', // Options: 'id', 'slug', or any other column name
     ],
 

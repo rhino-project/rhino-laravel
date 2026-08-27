@@ -612,32 +612,62 @@ class ResourceScopeTest extends TestCase
     }
 
     // ======================================================================
-    // 16. Single-tenant apps (config('rhino.multi_tenant.enabled') === false)
+    // 16. Non-tenant route groups ('tenant' => false)
     // ======================================================================
 
-    /** Turn the app-wide organization scoping off (admin-panel style app). */
-    protected function disableMultiTenancy(): void
+    /**
+     * Pretend the current request was served by a route belonging to $group —
+     * exactly what Rhino's generated CRUD routes do, and what a custom route
+     * tagged with ->defaults('route_group', $group) does. Passing null models a
+     * route that carries no group tag at all.
+     */
+    protected function actAsRouteGroup(?string $group): void
     {
-        config(['rhino.multi_tenant.enabled' => false]);
+        $route = new \Illuminate\Routing\Route(['GET'], '/scope-test', fn () => null);
+
+        if ($group !== null) {
+            $route->defaults('route_group', $group);
+        }
+
+        request()->setRouteResolver(fn () => $route);
     }
 
-    public function test_single_tenant_column_model_returns_every_org_and_does_not_throw(): void
+    /** A back-office group with no tenant boundary, alongside the tenant group. */
+    protected function configureAdminGroup(array $adminOverrides = ['tenant' => false]): void
     {
-        $this->disableMultiTenancy();
+        config(['rhino.route_groups' => [
+            'tenant' => [
+                'prefix' => '{organization}',
+                'middleware' => [],
+                'models' => '*',
+            ],
+            'admin' => array_merge([
+                'prefix' => 'admin',
+                'middleware' => [],
+                'models' => '*',
+            ], $adminOverrides),
+        ]]);
+    }
+
+    public function test_non_tenant_group_column_model_returns_every_org_and_does_not_throw(): void
+    {
+        $this->configureAdminGroup();
         $this->seedTasks();
         $this->actingAs($this->userA, 'sanctum');
-        $this->clearRequestOrg(); // admin panel: no tenant route group
+        $this->clearRequestOrg(); // the admin group resolves no organization
+        $this->actAsRouteGroup('admin');
 
         $titles = Rhino::query(ScopeTask::class)->pluck('title')->sort()->values()->all();
         $this->assertSame(['A high', 'A low', 'B high'], $titles);
     }
 
-    public function test_single_tenant_relationship_model_returns_every_org_and_does_not_throw(): void
+    public function test_non_tenant_group_relationship_model_returns_every_org_and_does_not_throw(): void
     {
-        $this->disableMultiTenancy();
+        $this->configureAdminGroup();
         $this->seedRelationshipChain();
         $this->actingAs($this->userA, 'sanctum');
         $this->clearRequestOrg();
+        $this->actAsRouteGroup('admin');
 
         // Indirect tenancy (comment -> post -> blog -> org) must be un-filtered
         // too, not just the direct organization_id column.
@@ -646,12 +676,12 @@ class ResourceScopeTest extends TestCase
     }
 
     /**
-     * The whole point of the flag: the app's own user-aware {Model}Scope is
-     * what decides access, and it still runs.
+     * The whole point of a non-tenant group: the app's own user-aware
+     * {Model}Scope is what decides access, and it still runs.
      */
-    public function test_single_tenant_ambient_query_applies_user_aware_scope_from_the_session(): void
+    public function test_non_tenant_group_applies_the_user_aware_scope_from_the_session(): void
     {
-        $this->disableMultiTenancy();
+        $this->configureAdminGroup();
         ScopeOwnedTaskScope::$enabled = true;
 
         ScopeOwnedTask::forceCreate(['organization_id' => $this->orgA->id, 'owner_id' => $this->userA->id, 'title' => 'A owns in org A']);
@@ -660,55 +690,109 @@ class ResourceScopeTest extends TestCase
 
         $this->actingAs($this->userA, 'sanctum');
         $this->clearRequestOrg();
+        $this->actAsRouteGroup('admin');
 
         // No org filter (both orgs), but only the session user's rows.
         $titles = Rhino::query(ScopeOwnedTask::class)->pluck('title')->sort()->values()->all();
         $this->assertSame(['A owns in org A', 'A owns in org B'], $titles);
     }
 
-    /** forUser() with no organization is the command/job form of the same thing. */
-    public function test_single_tenant_for_user_without_organization_applies_user_aware_scope(): void
+    /** forUser() inside a non-tenant request needs no organization either. */
+    public function test_non_tenant_group_for_user_without_organization_applies_user_aware_scope(): void
     {
-        $this->disableMultiTenancy();
+        $this->configureAdminGroup();
         ScopeOwnedTaskScope::$enabled = true;
 
         ScopeOwnedTask::forceCreate(['organization_id' => $this->orgA->id, 'owner_id' => $this->userB->id, 'title' => 'B owns in org A']);
         ScopeOwnedTask::forceCreate(['organization_id' => $this->orgB->id, 'owner_id' => $this->userB->id, 'title' => 'B owns in org B']);
         ScopeOwnedTask::forceCreate(['organization_id' => $this->orgA->id, 'owner_id' => $this->userA->id, 'title' => 'A owns in org A']);
 
-        $this->clearRequestOrg(); // console/job: no session, no request org
+        $this->clearRequestOrg();
+        $this->actAsRouteGroup('admin');
 
         $titles = Rhino::forUser($this->userB)->query(ScopeOwnedTask::class)
             ->pluck('title')->sort()->values()->all();
         $this->assertSame(['B owns in org A', 'B owns in org B'], $titles);
     }
 
-    public function test_single_tenant_scoped_query_still_applies_the_named_scope(): void
+    public function test_non_tenant_group_scoped_query_still_applies_the_named_scope(): void
     {
-        $this->disableMultiTenancy();
+        $this->configureAdminGroup();
         $this->seedTasks(); // org A: 10, 200; org B: 300
         $this->actingAs($this->userA, 'sanctum');
         $this->clearRequestOrg();
+        $this->actAsRouteGroup('admin');
 
         // highValue = points >= 100, now across every organization.
         $titles = Rhino::scopedQuery(ScopeTask::class, 'highValue')->pluck('title')->sort()->values()->all();
         $this->assertSame(['A high', 'B high'], $titles);
     }
 
-    /** An explicit organization still isolates, so a mixed app can opt back in. */
-    public function test_single_tenant_explicit_in_organization_still_isolates(): void
+    /** An explicit organization still isolates, even inside a non-tenant group. */
+    public function test_non_tenant_group_explicit_in_organization_still_isolates(): void
     {
-        $this->disableMultiTenancy();
+        $this->configureAdminGroup();
         $this->seedTasks();
         $this->clearRequestOrg();
+        $this->actAsRouteGroup('admin');
 
         $this->assertSame(2, Rhino::forUser($this->userA)->inOrganization($this->orgA)->query(ScopeTask::class)->count());
         $this->assertSame(1, Rhino::forUser($this->userB)->inOrganization($this->orgB)->query(ScopeTask::class)->count());
     }
 
-    /** Default (flag absent / true) is unchanged: forUser() alone still fails closed. */
-    public function test_multi_tenant_for_user_without_organization_still_fails_closed(): void
+    /** The OTHER group in the same app keeps failing closed. */
+    public function test_tenant_group_in_the_same_app_still_fails_closed(): void
     {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+        $this->actingAs($this->userA, 'sanctum');
+        $this->clearRequestOrg();
+        $this->actAsRouteGroup('tenant');
+
+        $this->expectException(MissingTenantContext::class);
+        Rhino::query(ScopeTask::class);
+    }
+
+    /** An explicit 'tenant' => true is a tenant group, same as omitting the key. */
+    public function test_group_with_tenant_true_fails_closed(): void
+    {
+        $this->configureAdminGroup(['tenant' => true]);
+        $this->seedTasks();
+        $this->clearRequestOrg();
+        $this->actAsRouteGroup('admin');
+
+        $this->expectException(MissingTenantContext::class);
+        Rhino::query(ScopeTask::class);
+    }
+
+    /** A route carrying no group tag is not in the non-tenant group. */
+    public function test_untagged_route_fails_closed_even_when_a_non_tenant_group_exists(): void
+    {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+        $this->clearRequestOrg();
+        $this->actAsRouteGroup(null);
+
+        $this->expectException(MissingTenantContext::class);
+        Rhino::query(ScopeTask::class);
+    }
+
+    /** A group name that is not configured at all is treated as a tenant group. */
+    public function test_unknown_group_fails_closed(): void
+    {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+        $this->clearRequestOrg();
+        $this->actAsRouteGroup('does-not-exist');
+
+        $this->expectException(MissingTenantContext::class);
+        Rhino::query(ScopeTask::class);
+    }
+
+    /** Outside a request (queue worker, console) no group resolves: fail closed. */
+    public function test_for_user_without_organization_and_without_a_route_still_fails_closed(): void
+    {
+        $this->configureAdminGroup();
         $this->seedTasks();
         $this->clearRequestOrg();
 
@@ -716,15 +800,57 @@ class ResourceScopeTest extends TestCase
         Rhino::forUser($this->userA)->query(ScopeTask::class);
     }
 
-    public function test_multi_tenant_is_the_default_when_the_flag_is_absent(): void
+    /** Default config (no groups declared non-tenant) is unchanged. */
+    public function test_tenant_is_the_default_when_the_key_is_absent(): void
     {
-        config(['rhino.multi_tenant' => ['organization_identifier_column' => 'id']]);
+        config(['rhino.route_groups' => [
+            'tenant' => ['prefix' => '{organization}', 'middleware' => [], 'models' => '*'],
+        ]]);
         $this->seedTasks();
         $this->actingAs($this->userA, 'sanctum');
         $this->clearRequestOrg();
+        $this->actAsRouteGroup('tenant');
 
         $this->expectException(MissingTenantContext::class);
         Rhino::query(ScopeTask::class);
+    }
+
+    // ----------------------------------------------------------------------
+    // End to end, through real routing
+    // ----------------------------------------------------------------------
+
+    /**
+     * The wiring that matters: a hand-registered custom route tagged with the
+     * non-tenant group serves a cross-organization query, while the same route
+     * left untagged still fails closed.
+     */
+    public function test_custom_route_tagged_with_a_non_tenant_group_spans_organizations(): void
+    {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+
+        Route::get('api/admin/task-count', fn () => ['count' => Rhino::query(ScopeTask::class)->count()])
+            ->defaults('route_group', 'admin');
+
+        $this->actingAs($this->userA, 'sanctum');
+
+        $this->getJson('api/admin/task-count')
+            ->assertOk()
+            ->assertJson(['count' => 3]);
+    }
+
+    public function test_custom_route_without_the_group_tag_still_fails_closed(): void
+    {
+        $this->configureAdminGroup();
+        $this->seedTasks();
+
+        Route::get('api/admin/task-count', fn () => ['count' => Rhino::query(ScopeTask::class)->count()]);
+
+        $this->actingAs($this->userA, 'sanctum');
+        $this->withoutExceptionHandling();
+
+        $this->expectException(MissingTenantContext::class);
+        $this->getJson('api/admin/task-count');
     }
 }
 

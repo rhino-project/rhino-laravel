@@ -68,7 +68,7 @@ This library provides the following features. When modifying or extending any of
 | 13 | **Eager Loading** (`?include=user,comments`, nested, Count/Exists suffixes, auth per include) | `GlobalController.php` |
 | 14 | **Multi-Tenancy** (org-based data isolation, auto-set org_id, global scope) | `BelongsToOrganization.php`, `ResolveOrganizationFromRoute.php` |
 | 15 | **Nested Ownership Auto-Detection** (walks BelongsTo chains to find org) | `GlobalController.php`, `HasValidation.php` |
-| 16 | **Route Groups** (tenant, public, custom groups with different middleware/auth) | `config/rhino.php`, route registration |
+| 16 | **Route Groups** (tenant, public, custom groups with different middleware/auth; per-group `'tenant' => false` for back-office groups with no tenant boundary) | `config/rhino.php`, route registration, `src/Support/ResourceScope.php` (`currentGroupIsTenant`) |
 | 17 | **Soft Deletes** (trash, restore, force-delete endpoints + permissions) | `GlobalController.php`, `RhinoModel.php` |
 | 18 | **Audit Trail** (logs all CRUD events with old/new values, user, IP, org) | `HasAuditTrail.php`, `AuditLog.php` |
 | 19 | **Nested Operations** (POST /nested, atomic transactions, $N.field references) | `GlobalController.php` |

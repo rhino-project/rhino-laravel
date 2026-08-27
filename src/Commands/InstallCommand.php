@@ -374,15 +374,18 @@ class InstallCommand extends Command
 
         $config = require $configPath;
 
-        // Merge, don't replace: the published block also carries 'enabled',
-        // which must survive re-serialization so a single-tenant admin panel
-        // can still find (and flip) it in its own config file.
+        // Merge, don't replace: any other key the app added to this block must
+        // survive re-serialization rather than being dropped on the next install.
         $config['multi_tenant'] = array_merge(
-            ['enabled' => true],
             $config['multi_tenant'] ?? [],
             ['organization_identifier_column' => $identifierColumn],
         );
 
+        // route_groups IS replaced: enabling multi-tenancy makes the tenant group
+        // authoritative, and keeping a pre-existing empty-prefix group serving
+        // '*' would leave every model exposed on an unscoped, org-less route.
+        // Groups the app needs alongside it (an admin group, say) are re-added by
+        // hand after install.
         $config['route_groups'] = [
             'tenant' => [
                 'prefix' => '{organization}',
