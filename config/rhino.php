@@ -111,6 +111,19 @@ return [
     // segment lookup: foreign keys in payloads, nested-operation ids,
     // `exists:` validation columns, and audit logs remain primary-key based.
     'route_key' => 'id',
+    // ------------------------------------------------------------------
+    // Named scopes: how many may be combined in one request
+    // ------------------------------------------------------------------
+    // A client may select several named scopes at once with the bracket form
+    // (?scope[archived]=&scope[window][from]=...). Each one is an arbitrary
+    // query fragment that may add joins or subqueries, so the number is capped:
+    // a request over the cap returns 403 "Too many scopes requested".
+    //
+    // Three covers a base scope, a window, and one more predicate. Raise it if
+    // your clients legitimately compose more, but remember that every extra
+    // scope is another fragment in the same SQL statement.
+    'max_scopes_per_request' => 3,
+
     'invitations' => [
         'expires_days' => env('INVITATION_EXPIRES_DAYS', 7),
         'allowed_roles' => null, // null means all roles can invite, or specify array of role slugs

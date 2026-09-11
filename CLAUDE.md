@@ -62,7 +62,7 @@ This library provides the following features. When modifying or extending any of
 | 8 | **Filtering** (`?filter[field]=value`, AND/OR logic; 403 when the policy hides the attribute) | `GlobalController.php` (Spatie Query Builder) |
 | 9 | **Sorting** (`?sort=-created_at,title`; 403 when the policy hides the attribute, `$defaultSort` exempt) | `GlobalController.php` |
 | 10 | **Full-Text Search** (`?search=term`, dot-notation for relationships; skips hidden columns, fails closed when all are hidden) | `GlobalController.php` |
-| 10a | **Named Scopes** (`?scope=name` or `?scope[name][param]=value` with model-declared parameters, up to 3 per request; model-whitelisted Eloquent scopes + `$defaultScope` + policy `permittedScopes()`, user injected, 403 on non-whitelisted/denied/bad arguments; index/trashed/computed only) | `GlobalController.php`, `Support/ScopeSpec.php`, `RhinoModel.php`, `Contracts/HasPermittedScopes.php` |
+| 10a | **Named Scopes** (`?scope=name` or `?scope[name][param]=value` with model-declared parameters, up to `rhino.max_scopes_per_request` (default 3) per request; model-whitelisted Eloquent scopes + `$defaultScope` + policy `permittedScopes()`, user injected, 403 on non-whitelisted/denied/bad arguments; index/trashed/computed only) | `GlobalController.php`, `Support/ScopeSpec.php`, `RhinoModel.php`, `Contracts/HasPermittedScopes.php` |
 | 11 | **Pagination** (header-based: X-Current-Page, X-Last-Page, X-Per-Page, X-Total) | `GlobalController.php` |
 | 12 | **Field Selection** (`?fields[posts]=id,title`) | `GlobalController.php` |
 | 13 | **Eager Loading** (`?include=user,comments`, nested, Count/Exists suffixes, auth per include) | `GlobalController.php` |

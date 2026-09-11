@@ -21,11 +21,15 @@ class GlobalController extends Controller
     use \Rhino\Support\ScopesToOrganization;
 
     /**
-     * How many named scopes one request may combine. Scopes are arbitrary query
-     * fragments, so stacking many of them is a good way to build an accidental
-     * cross join; three covers every real listing and keeps the blast radius small.
+     * Fallback for how many named scopes one request may combine, used when
+     * `rhino.max_scopes_per_request` is absent — an app that published its
+     * config before the key existed keeps today's behavior.
+     *
+     * Scopes are arbitrary query fragments, so stacking many of them is a good
+     * way to build an accidental cross join; three covers every real listing
+     * and keeps the blast radius small.
      */
-    protected const MAX_SCOPES_PER_REQUEST = 3;
+    protected const DEFAULT_MAX_SCOPES_PER_REQUEST = 3;
 
     protected $modelClass;
 
@@ -838,7 +842,7 @@ class GlobalController extends Controller
             }
         }
 
-        if (count($requested) > static::MAX_SCOPES_PER_REQUEST) {
+        if (count($requested) > $this->maxScopesPerRequest()) {
             return response()->json(['message' => 'Too many scopes requested'], 403);
         }
 
@@ -871,6 +875,22 @@ class GlobalController extends Controller
         }
 
         return null;
+    }
+
+    /**
+     * How many named scopes this app allows in one request
+     * (`rhino.max_scopes_per_request`). A non-numeric or non-positive value
+     * falls back to the default rather than disabling scopes outright.
+     */
+    protected function maxScopesPerRequest(): int
+    {
+        $configured = config('rhino.max_scopes_per_request', static::DEFAULT_MAX_SCOPES_PER_REQUEST);
+
+        if (! is_numeric($configured) || (int) $configured < 1) {
+            return static::DEFAULT_MAX_SCOPES_PER_REQUEST;
+        }
+
+        return (int) $configured;
     }
 
     /**

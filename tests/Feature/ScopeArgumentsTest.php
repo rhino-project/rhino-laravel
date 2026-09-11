@@ -382,6 +382,33 @@ class ScopeArgumentsTest extends TestCase
         $response->assertJson(['message' => 'Too many scopes requested']);
     }
 
+    public function test_the_scope_cap_is_configurable(): void
+    {
+        $this->registerRoutes(['routes' => ArgRoute::class]);
+        config(['rhino.max_scopes_per_request' => 2]);
+        $this->authenticate();
+        $this->seedRoutes();
+
+        $this->getJson('/api/routes?scope[archived]=&scope[longerThan]=1')->assertOk();
+
+        $response = $this->getJson('/api/routes?scope[archived]=&scope[longerThan]=1&scope[titled][title]=Old');
+
+        $response->assertStatus(403);
+        $response->assertJson(['message' => 'Too many scopes requested']);
+    }
+
+    public function test_a_nonsense_cap_falls_back_to_the_default(): void
+    {
+        $this->registerRoutes(['routes' => ArgRoute::class]);
+        config(['rhino.max_scopes_per_request' => 0]);
+        $this->authenticate();
+        $this->seedRoutes();
+
+        // Three still allowed; a zero or negative cap would otherwise lock every
+        // scope out of every request.
+        $this->getJson('/api/routes?scope[archived]=&scope[longerThan]=1&scope[titled][title]=Old')->assertOk();
+    }
+
     // ---- policy ------------------------------------------------------------
 
     public function test_policy_can_deny_a_declared_scope(): void
