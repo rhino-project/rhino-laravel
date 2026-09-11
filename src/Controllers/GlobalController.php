@@ -14,6 +14,7 @@ use Rhino\Contracts\HasPermittedScopes;
 use Rhino\Exceptions\InvalidScopeArguments;
 use Rhino\Support\ScopeSpec;
 use Spatie\QueryBuilder\AllowedFilter;
+use Spatie\QueryBuilder\AllowedSort;
 use Spatie\QueryBuilder\QueryBuilder;
 
 class GlobalController extends Controller
@@ -32,6 +33,14 @@ class GlobalController extends Controller
     protected const DEFAULT_MAX_SCOPES_PER_REQUEST = 3;
 
     protected $modelClass;
+
+    /**
+     * Column listings per table, so the query gate does not describe the schema
+     * once per attribute. Request-lived: the controller is resolved per request.
+     *
+     * @var array<string, array<string>>
+     */
+    protected static $columnCache = [];
 
     /**
      * Get the model slug from the route defaults.
@@ -963,14 +972,26 @@ class GlobalController extends Controller
     {
         $filters = $request->input('filter');
         if (is_array($filters)) {
-            $allowed = $this->declaredFilterNames();
+            $declared = property_exists($this->modelClass, 'allowedFilters')
+                ? (array) $this->modelClass::$allowedFilters
+                : [];
 
             foreach (array_keys($filters) as $key) {
-                if (! is_string($key) || ! in_array($key, $allowed, true)) {
+                if (! is_string($key)) {
                     continue;
                 }
 
-                if (! $this->queryAttributeAllowed($key)) {
+                $entry = $this->declaredEntryFor($declared, $key, fn ($e) => $this->filterNames($e));
+
+                // Not allowlisted at all: ignored, as before. Refusing here would
+                // tell the caller which columns exist.
+                if ($entry === null) {
+                    continue;
+                }
+
+                [, $attribute] = $this->filterNames($entry);
+
+                if (! $this->queryAttributeAllowed($attribute)) {
                     return response()->json(['message' => "Filter '{$key}' is not allowed"], 403);
                 }
             }
@@ -978,18 +999,26 @@ class GlobalController extends Controller
 
         $sort = $request->input('sort');
         if (is_string($sort) && $sort !== '') {
-            $allowed = property_exists($this->modelClass, 'allowedSorts')
-                ? array_map('strval', (array) $this->modelClass::$allowedSorts)
+            $declared = property_exists($this->modelClass, 'allowedSorts')
+                ? (array) $this->modelClass::$allowedSorts
                 : [];
 
             foreach (explode(',', $sort) as $field) {
                 $field = ltrim(trim($field), '-');
 
-                if ($field === '' || ! in_array($field, $allowed, true)) {
+                if ($field === '') {
                     continue;
                 }
 
-                if (! $this->queryAttributeAllowed($field)) {
+                $entry = $this->declaredEntryFor($declared, $field, fn ($e) => $this->sortNames($e));
+
+                if ($entry === null) {
+                    continue;
+                }
+
+                [, $attribute] = $this->sortNames($entry);
+
+                if (! $this->queryAttributeAllowed($attribute)) {
                     return response()->json(['message' => "Sort '{$field}' is not allowed"], 403);
                 }
             }
@@ -999,21 +1028,45 @@ class GlobalController extends Controller
     }
 
     /**
-     * The model's declared filter names, with Spatie AllowedFilter objects
-     * reduced to the name the client sends.
+     * The declared entry a client-supplied name refers to, or null when nothing
+     * in the allowlist answers to it.
      *
-     * @return array<string>
+     * @param  array<mixed>  $declared
+     * @param  callable(mixed): array<string>  $names
+     * @return mixed|null
      */
-    protected function declaredFilterNames(): array
+    protected function declaredEntryFor(array $declared, string $requested, callable $names)
     {
-        if (! property_exists($this->modelClass, 'allowedFilters')) {
-            return [];
+        foreach ($declared as $entry) {
+            $entryNames = $names($entry);
+
+            // The FIRST name is the one the client sends; an internal name is a
+            // column the entry reads, not something that can be asked for.
+            if (($entryNames[0] ?? null) === $requested) {
+                return $entry;
+            }
         }
 
-        return array_map(
-            fn ($filter) => $filter instanceof AllowedFilter ? $filter->getName() : (string) $filter,
-            (array) $this->modelClass::$allowedFilters
-        );
+        return null;
+    }
+
+    /**
+     * The name a client sends for one `$allowedFilters` entry, and the attribute
+     * that entry actually reads. They differ when the filter renames a column
+     * (`AllowedFilter::exact('cost', 'salary')`): `cost` is what the URL carries,
+     * `salary` is what the policy has an opinion about.
+     *
+     * @return array{0: string, 1: string}
+     */
+    protected function filterNames($filter): array
+    {
+        if ($filter instanceof AllowedFilter) {
+            return [$filter->getName(), $filter->getInternalName()];
+        }
+
+        $name = is_string($filter) ? $filter : (string) $filter;
+
+        return [$name, $name];
     }
 
     /**
@@ -1027,11 +1080,7 @@ class GlobalController extends Controller
     {
         return array_values(array_filter(
             (array) $this->modelClass::$allowedFilters,
-            function ($filter) {
-                $name = $filter instanceof AllowedFilter ? $filter->getName() : (string) $filter;
-
-                return $this->queryAttributeAllowed($name);
-            }
+            fn ($filter) => $this->queryAttributeAllowed($this->filterNames($filter)[1])
         ));
     }
 
@@ -1044,8 +1093,26 @@ class GlobalController extends Controller
     {
         return array_values(array_filter(
             (array) $this->modelClass::$allowedSorts,
-            fn ($sort) => $this->queryAttributeAllowed(is_string($sort) ? $sort : (string) $sort)
+            fn ($sort) => $this->queryAttributeAllowed($this->sortNames($sort)[1])
         ));
+    }
+
+    /**
+     * The name a client sends for one `$allowedSorts` entry, and the attribute
+     * that entry actually orders by (`AllowedSort::field('cost', 'salary')`).
+     * Casting the object to a string is a fatal error, so ask it for its names.
+     *
+     * @return array{0: string, 1: string}
+     */
+    protected function sortNames($sort): array
+    {
+        if ($sort instanceof AllowedSort) {
+            return [$sort->getName(), $sort->getInternalName()];
+        }
+
+        $name = is_string($sort) ? $sort : (string) $sort;
+
+        return [$name, $name];
     }
 
     /**
@@ -1056,13 +1123,16 @@ class GlobalController extends Controller
      */
     protected function queryAttributeAllowed(string $name): bool
     {
-        return $this->attributePathAllowed($this->modelClass, $name, auth('sanctum')->user());
+        return $this->attributePathAllowed($this->modelClass, $name, auth('sanctum')->user(), true);
     }
 
     /**
      * @param  object|string  $model
+     * @param  bool  $queryGate  Whether this is the filter/sort/search gate,
+     *   where a name that is not a column of the model is a label rather than
+     *   an attribute (see attributeVisibleToUser).
      */
-    protected function attributePathAllowed($model, string $path, $user): bool
+    protected function attributePathAllowed($model, string $path, $user, bool $queryGate = false): bool
     {
         if (str_contains($path, '.')) {
             [$relation, $rest] = explode('.', $path, 2);
@@ -1079,19 +1149,26 @@ class GlobalController extends Controller
                 return true;
             }
 
-            return $this->attributePathAllowed($related, $rest, $user);
+            return $this->attributePathAllowed($related, $rest, $user, $queryGate);
         }
 
-        return $this->attributeVisibleToUser($model, $path, $user);
+        return $this->attributeVisibleToUser($model, $path, $user, $queryGate);
     }
 
     /**
      * The shared gate: `hiddenAttributesForShow()` blacklists, and
      * `permittedAttributesForShow()` whitelists unless it returns `['*']`.
      *
+     * `$queryGate` relaxes the whitelist arm for filters and sorts only. A query
+     * allowlist may name something that is not a column at all — a callback
+     * filter (`AllowedFilter::callback('q', ...)`) or a renamed entry's label —
+     * and such a name is not an attribute the policy has an opinion about, so a
+     * whitelist policy must not refuse it. An explicitly hidden name is still
+     * refused either way, and a real column outside the whitelist still is too.
+     *
      * @param  object|string  $model
      */
-    protected function attributeVisibleToUser($model, string $name, $user): bool
+    protected function attributeVisibleToUser($model, string $name, $user, bool $queryGate = false): bool
     {
         try {
             $policy = Gate::getPolicyFor($model);
@@ -1109,7 +1186,36 @@ class GlobalController extends Controller
 
         $permitted = $policy->permittedAttributesForShow($user);
 
-        return $permitted === ['*'] || in_array($name, $permitted, true);
+        if ($permitted === ['*'] || in_array($name, $permitted, true)) {
+            return true;
+        }
+
+        return $queryGate && ! $this->isModelColumn($model, $name);
+    }
+
+    /**
+     * Whether the model's table actually has this column. Listed once per model
+     * per request; a schema that cannot be read (an unusual connection, a test
+     * double) answers "yes" so the whitelist keeps applying.
+     *
+     * @param  object|string  $model
+     */
+    protected function isModelColumn($model, string $name): bool
+    {
+        try {
+            $instance = is_object($model) ? $model : app($model);
+            $table = $instance->getTable();
+
+            if (! isset(static::$columnCache[$table])) {
+                static::$columnCache[$table] = $instance->getConnection()
+                    ->getSchemaBuilder()
+                    ->getColumnListing($table);
+            }
+
+            return in_array($name, static::$columnCache[$table], true);
+        } catch (\Throwable $e) {
+            return true;
+        }
     }
 
     /**
