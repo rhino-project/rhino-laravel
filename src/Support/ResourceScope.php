@@ -59,7 +59,9 @@ class ResourceScope
     {
         $query = $this->query($modelClass);
 
-        $allowed = property_exists($modelClass, 'allowedScopes') ? $modelClass::$allowedScopes : [];
+        $allowed = property_exists($modelClass, 'allowedScopes')
+            ? ScopeSpec::names((array) $modelClass::$allowedScopes)
+            : [];
 
         if ($namedScope && in_array($namedScope, $allowed, true) && app($modelClass)->hasNamedScope($namedScope)) {
             $query->scopes([$namedScope => [app(RhinoContext::class)->user()]]);

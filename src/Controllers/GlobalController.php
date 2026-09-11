@@ -10,12 +10,22 @@ use Illuminate\Support\Facades\Gate;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Facades\Log;
 use Rhino\Contracts\HasPermittedAttributes;
+use Rhino\Contracts\HasPermittedScopes;
+use Rhino\Exceptions\InvalidScopeArguments;
+use Rhino\Support\ScopeSpec;
 use Spatie\QueryBuilder\AllowedFilter;
 use Spatie\QueryBuilder\QueryBuilder;
 
 class GlobalController extends Controller
 {
     use \Rhino\Support\ScopesToOrganization;
+
+    /**
+     * How many named scopes one request may combine. Scopes are arbitrary query
+     * fragments, so stacking many of them is a good way to build an accidental
+     * cross join; three covers every real listing and keeps the blast radius small.
+     */
+    protected const MAX_SCOPES_PER_REQUEST = 3;
 
     protected $modelClass;
 
@@ -131,8 +141,12 @@ class GlobalController extends Controller
             return $scopeError;
         }
 
+        if ($attributeError = $this->guardQueryAttributes($request)) {
+            return $attributeError;
+        }
+
         if (property_exists($this->modelClass, 'allowedFilters')) {
-            $query = $query->allowedFilters($this->normalizeFilters($this->modelClass::$allowedFilters));
+            $query = $query->allowedFilters($this->normalizeFilters($this->queryableFilters()));
         } elseif ($request->has('filters')) {
             return response()->json(['message' => 'Filters are not allowed'], 403);
         }
@@ -140,7 +154,7 @@ class GlobalController extends Controller
             $query = $query->defaultSort($this->modelClass::$defaultSort);
         }
         if (property_exists($this->modelClass, 'allowedSorts')) {
-            $query = $query->allowedSorts($this->modelClass::$allowedSorts);
+            $query = $query->allowedSorts($this->queryableSorts());
         }
         if (property_exists($this->modelClass, 'allowedFields')) {
             $query = $query->allowedFields($this->modelClass::$allowedFields);
@@ -416,8 +430,12 @@ class GlobalController extends Controller
             return $scopeError;
         }
 
+        if ($attributeError = $this->guardQueryAttributes($request)) {
+            return $attributeError;
+        }
+
         if (property_exists($this->modelClass, 'allowedFilters')) {
-            $query = $query->allowedFilters($this->normalizeFilters($this->modelClass::$allowedFilters));
+            $query = $query->allowedFilters($this->normalizeFilters($this->queryableFilters()));
         } elseif ($request->has('filters')) {
             return response()->json(['message' => 'Filters are not allowed'], 403);
         }
@@ -555,25 +573,7 @@ class GlobalController extends Controller
      */
     protected function computedAttributeAllowed(string $name, $user): bool
     {
-        try {
-            $policy = Gate::getPolicyFor($this->modelClass);
-        } catch (\Exception $e) {
-            // Policy resolution failed — serialization applies the same filters
-            // again downstream, so nothing can leak through this fallback.
-            return true;
-        }
-
-        if (! $policy instanceof HasPermittedAttributes) {
-            return true;
-        }
-
-        if (in_array($name, $policy->hiddenAttributesForShow($user), true)) {
-            return false;
-        }
-
-        $permitted = $policy->permittedAttributesForShow($user);
-
-        return $permitted === ['*'] || in_array($name, $permitted, true);
+        return $this->attributeVisibleToUser($this->modelClass, $name, $user);
     }
 
     /**
@@ -600,14 +600,18 @@ class GlobalController extends Controller
             return $scopeError;
         }
 
+        if ($attributeError = $this->guardQueryAttributes($request)) {
+            return $attributeError;
+        }
+
         if (property_exists($this->modelClass, 'allowedFilters')) {
-            $query = $query->allowedFilters($this->normalizeFilters($this->modelClass::$allowedFilters));
+            $query = $query->allowedFilters($this->normalizeFilters($this->queryableFilters()));
         }
         if (property_exists($this->modelClass, 'defaultSort')) {
             $query = $query->defaultSort($this->modelClass::$defaultSort);
         }
         if (property_exists($this->modelClass, 'allowedSorts')) {
-            $query = $query->allowedSorts($this->modelClass::$allowedSorts);
+            $query = $query->allowedSorts($this->queryableSorts());
         }
         if (property_exists($this->modelClass, 'allowedFields')) {
             $query = $query->allowedFields($this->modelClass::$allowedFields);
@@ -769,46 +773,114 @@ class GlobalController extends Controller
     }
 
     /**
-     * Apply a client-selected named scope (`?scope=name`) or the model's default
-     * scope. Returns a 403 JsonResponse when the scope is not allowed, otherwise
-     * null. The current sanctum user is passed to the scope as its first argument.
+     * Apply the client-selected named scopes (`?scope=`) or the model's default
+     * scope. Returns a 403 JsonResponse when a scope is not allowed, otherwise
+     * null.
      *
-     * Only index() and trashed() call this; show/update/destroy are unscoped.
-     * The default scope is a listing convenience, not a security boundary —
-     * selecting another allowed scope replaces it. Mandatory restrictions belong
-     * in global scopes.
+     * Two wire forms, which cannot be mixed in one request because they share
+     * the same query key:
+     *
+     *   ?scope=archived                      legacy, one scope, no arguments
+     *   ?scope[archived]=                    same thing in the bracket form
+     *   ?scope[since]=2026-01-01             one argument, bound to the single
+     *                                        declared parameter
+     *   ?scope[window][from]=a&scope[window][to]=b   named arguments
+     *
+     * Arguments are bound BY NAME to the parameters the model declared in
+     * `$allowedScopes` and passed to the scope in declared order, after the
+     * current user. A scope that declares no parameters never receives any.
+     *
+     * A name must be declared by the model AND permitted by the policy's
+     * `permittedScopes()`. Both failures return the same message, so the
+     * endpoint never reveals which scopes exist.
+     *
+     * Only index(), trashed() and computed() call this; show/update/destroy are
+     * unscoped. The default scope is a listing convenience, not a security
+     * boundary — selecting another allowed scope replaces it. Mandatory
+     * restrictions belong in global scopes.
      *
      * @return \Illuminate\Http\JsonResponse|null
      */
     protected function applyNamedScope($query, Request $request)
     {
-        $name = $request->input('scope');
+        $raw = $request->input('scope');
 
-        // Reject non-string input (?scope[]=x) before any interpolation.
-        if ($name !== null && ! is_string($name)) {
-            return response()->json(['message' => 'Scope is not allowed'], 403);
-        }
+        $declared = property_exists($this->modelClass, 'allowedScopes')
+            ? ScopeSpec::normalize((array) $this->modelClass::$allowedScopes)
+            : [];
 
         $default = property_exists($this->modelClass, 'defaultScope')
             ? $this->modelClass::$defaultScope
             : null;
 
-        if ($name === null || $name === '') {
-            $name = $default; // fall back to the model's default scope
-        } elseif ($name !== $default) {
-            $allowed = property_exists($this->modelClass, 'allowedScopes')
-                ? $this->modelClass::$allowedScopes
-                : [];
+        // Nothing requested: the model's default scope, which takes no arguments.
+        if ($raw === null || $raw === '' || $raw === []) {
+            if ($default === null || $default === '') {
+                return null;
+            }
 
-            if (! in_array($name, $allowed, true)) {
-                return response()->json(['message' => "Scope '{$name}' is not allowed"], 403);
+            return $this->runNamedScope($query, (string) $default, []);
+        }
+
+        if (is_string($raw)) {
+            // Legacy form — one scope, no arguments.
+            $requested = [$raw => ''];
+        } elseif (is_array($raw)) {
+            $requested = $raw;
+        } else {
+            return response()->json(['message' => 'Scope is not allowed'], 403);
+        }
+
+        // A positional list (?scope[]=a) names nothing: reject before any lookup.
+        foreach (array_keys($requested) as $name) {
+            if (! is_string($name) || $name === '') {
+                return response()->json(['message' => 'Scope is not allowed'], 403);
             }
         }
 
-        if ($name === null) {
-            return null; // no scope requested and no default declared
+        if (count($requested) > static::MAX_SCOPES_PER_REQUEST) {
+            return response()->json(['message' => 'Too many scopes requested'], 403);
         }
 
+        $permitted = $this->permittedScopeNames();
+
+        foreach ($requested as $name => $rawArguments) {
+            $name = (string) $name;
+
+            // Declared by the model, or the model's own default scope (which is
+            // implicitly requestable by name).
+            if (! array_key_exists($name, $declared) && $name !== $default) {
+                return response()->json(['message' => "Scope '{$name}' is not allowed"], 403);
+            }
+
+            if ($permitted !== ['*'] && ! in_array($name, $permitted, true)) {
+                return response()->json(['message' => "Scope '{$name}' is not allowed"], 403);
+            }
+
+            $spec = $declared[$name] ?? ['params' => [], 'optional' => []];
+
+            try {
+                $arguments = ScopeSpec::bind($name, $spec, $rawArguments);
+            } catch (InvalidScopeArguments $e) {
+                return response()->json(['message' => $e->getMessage()], 403);
+            }
+
+            if ($error = $this->runNamedScope($query, $name, $arguments)) {
+                return $error;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Run one already-authorized named scope against the query.
+     *
+     * @param  array<int, mixed>  $arguments
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function runNamedScope($query, string $name, array $arguments)
+    {
         // hasNamedScope() guarantees only scopeXxx()/#[Scope] methods are ever
         // invoked — never an arbitrary model or builder method.
         if (! $this->modelClass->hasNamedScope($name)) {
@@ -819,9 +891,205 @@ class GlobalController extends Controller
         // call can never be shadowed by a real QueryBuilder/Builder method or
         // macro (e.g. a scope named 'delete' would otherwise execute
         // Builder::delete()). Builder::scopes() routes straight to callNamedScope.
-        $query->scopes([$name => [auth('sanctum')->user()]]);
+        $query->scopes([$name => array_merge([auth('sanctum')->user()], $arguments)]);
 
         return null;
+    }
+
+    /**
+     * Scope names this user may select, or `['*']` when the policy does not
+     * restrict them (the default, and the behavior of every policy written
+     * before `permittedScopes()` existed).
+     *
+     * @return array<string>
+     */
+    protected function permittedScopeNames(): array
+    {
+        try {
+            $policy = Gate::getPolicyFor($this->modelClass);
+        } catch (\Exception $e) {
+            $policy = null;
+        }
+
+        if ($policy === null || ! method_exists($policy, 'permittedScopes')) {
+            return ['*'];
+        }
+
+        $permitted = $policy->permittedScopes(auth('sanctum')->user());
+
+        if (! is_array($permitted)) {
+            return ['*'];
+        }
+
+        return array_values(array_map('strval', $permitted));
+    }
+
+    /**
+     * 403 when the request asks to filter or sort by an attribute this user's
+     * policy hides.
+     *
+     * Attribute permissions used to apply only when serializing, so a hidden
+     * column stayed usable as a query predicate: `?filter[salary]=300000` never
+     * printed a salary but told the caller whose salary it was, and `?sort=`
+     * leaked the whole ordering. Filters and sorts now go through the same gate
+     * as the response body.
+     *
+     * A name the model never allowlisted is still ignored rather than refused,
+     * so this cannot be used to discover which columns exist.
+     *
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function guardQueryAttributes(Request $request)
+    {
+        $filters = $request->input('filter');
+        if (is_array($filters)) {
+            $allowed = $this->declaredFilterNames();
+
+            foreach (array_keys($filters) as $key) {
+                if (! is_string($key) || ! in_array($key, $allowed, true)) {
+                    continue;
+                }
+
+                if (! $this->queryAttributeAllowed($key)) {
+                    return response()->json(['message' => "Filter '{$key}' is not allowed"], 403);
+                }
+            }
+        }
+
+        $sort = $request->input('sort');
+        if (is_string($sort) && $sort !== '') {
+            $allowed = property_exists($this->modelClass, 'allowedSorts')
+                ? array_map('strval', (array) $this->modelClass::$allowedSorts)
+                : [];
+
+            foreach (explode(',', $sort) as $field) {
+                $field = ltrim(trim($field), '-');
+
+                if ($field === '' || ! in_array($field, $allowed, true)) {
+                    continue;
+                }
+
+                if (! $this->queryAttributeAllowed($field)) {
+                    return response()->json(['message' => "Sort '{$field}' is not allowed"], 403);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The model's declared filter names, with Spatie AllowedFilter objects
+     * reduced to the name the client sends.
+     *
+     * @return array<string>
+     */
+    protected function declaredFilterNames(): array
+    {
+        if (! property_exists($this->modelClass, 'allowedFilters')) {
+            return [];
+        }
+
+        return array_map(
+            fn ($filter) => $filter instanceof AllowedFilter ? $filter->getName() : (string) $filter,
+            (array) $this->modelClass::$allowedFilters
+        );
+    }
+
+    /**
+     * `$allowedFilters` with everything this user may not see removed. The
+     * request is already refused by guardQueryAttributes(); this keeps a denied
+     * column out of the query builder even if some other path reaches it.
+     *
+     * @return array<mixed>
+     */
+    protected function queryableFilters(): array
+    {
+        return array_values(array_filter(
+            (array) $this->modelClass::$allowedFilters,
+            function ($filter) {
+                $name = $filter instanceof AllowedFilter ? $filter->getName() : (string) $filter;
+
+                return $this->queryAttributeAllowed($name);
+            }
+        ));
+    }
+
+    /**
+     * `$allowedSorts` with everything this user may not see removed.
+     *
+     * @return array<mixed>
+     */
+    protected function queryableSorts(): array
+    {
+        return array_values(array_filter(
+            (array) $this->modelClass::$allowedSorts,
+            fn ($sort) => $this->queryAttributeAllowed(is_string($sort) ? $sort : (string) $sort)
+        ));
+    }
+
+    /**
+     * Whether this user may use an attribute as a query predicate. Dotted names
+     * (`user.name`) are checked against the related model's own policy; an
+     * unresolvable relation is left alone, so nothing that worked before starts
+     * failing for a reason nobody can find.
+     */
+    protected function queryAttributeAllowed(string $name): bool
+    {
+        return $this->attributePathAllowed($this->modelClass, $name, auth('sanctum')->user());
+    }
+
+    /**
+     * @param  object|string  $model
+     */
+    protected function attributePathAllowed($model, string $path, $user): bool
+    {
+        if (str_contains($path, '.')) {
+            [$relation, $rest] = explode('.', $path, 2);
+
+            try {
+                $instance = is_object($model) ? $model : app($model);
+
+                if (! method_exists($instance, $relation)) {
+                    return true;
+                }
+
+                $related = $instance->{$relation}()->getRelated();
+            } catch (\Throwable $e) {
+                return true;
+            }
+
+            return $this->attributePathAllowed($related, $rest, $user);
+        }
+
+        return $this->attributeVisibleToUser($model, $path, $user);
+    }
+
+    /**
+     * The shared gate: `hiddenAttributesForShow()` blacklists, and
+     * `permittedAttributesForShow()` whitelists unless it returns `['*']`.
+     *
+     * @param  object|string  $model
+     */
+    protected function attributeVisibleToUser($model, string $name, $user): bool
+    {
+        try {
+            $policy = Gate::getPolicyFor($model);
+        } catch (\Exception $e) {
+            return true;
+        }
+
+        if (! $policy instanceof HasPermittedAttributes) {
+            return true;
+        }
+
+        if (in_array($name, $policy->hiddenAttributesForShow($user), true)) {
+            return false;
+        }
+
+        $permitted = $policy->permittedAttributesForShow($user);
+
+        return $permitted === ['*'] || in_array($name, $permitted, true);
     }
 
     /**
@@ -839,7 +1107,25 @@ class GlobalController extends Controller
             return;
         }
 
-        $columns = $this->modelClass::$allowedSearch;
+        $declared = (array) $this->modelClass::$allowedSearch;
+        if ($declared === []) {
+            return;
+        }
+
+        $columns = array_values(array_filter(
+            $declared,
+            fn ($column) => $this->queryAttributeAllowed((string) $column)
+        ));
+
+        // Every searchable column is hidden from this user. Searching a hidden
+        // column tells the caller what is in it, so return nothing rather than
+        // silently returning the whole list the client asked to narrow.
+        if ($columns === []) {
+            $query->whereRaw('1 = 0');
+
+            return;
+        }
+
         $term = '%'.strtolower((string) $searchTerm).'%';
 
         $query->where(function ($q) use ($columns, $term) {

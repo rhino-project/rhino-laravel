@@ -56,13 +56,13 @@ This library provides the following features. When modifying or extending any of
 | 2 | **Authentication** (login, logout, password recovery/reset, invitation registration) | `AuthController.php` |
 | 3 | **Authorization & Policies** (convention-based `{slug}.{action}` permissions, wildcards) | `ResourcePolicy.php`, `HasPermissions.php` |
 | 4 | **Role-Based Access Control** (per-org roles via user_roles pivot) | `HasPermissions.php` |
-| 5 | **Attribute-Level Permissions** (read/write field control per role) | `ResourcePolicy.php`, `HidableColumns.php` |
+| 5 | **Attribute-Level Permissions** (read/write field control per role; the read gate also applies to `?filter[]`, `?sort` and `?search`) | `ResourcePolicy.php`, `HidableColumns.php`, `GlobalController.php` (`guardQueryAttributes`) |
 | 6 | **Validation** (format rules via `$validationRules`, field presence via store/update rules, role-keyed) | `HasValidation.php` |
 | 7 | **Cross-Tenant FK Validation** (auto-scopes `exists:` rules to org, even through indirect FK relationships) | `HasValidation.php` |
-| 8 | **Filtering** (`?filter[field]=value`, AND/OR logic) | `GlobalController.php` (Spatie Query Builder) |
-| 9 | **Sorting** (`?sort=-created_at,title`) | `GlobalController.php` |
-| 10 | **Full-Text Search** (`?search=term`, dot-notation for relationships) | `GlobalController.php` |
-| 10a | **Named Scopes** (`?scope=name`, model-whitelisted Eloquent scopes + `$defaultScope`, user injected, 403 on non-whitelisted; index/trashed only) | `GlobalController.php`, `RhinoModel.php` |
+| 8 | **Filtering** (`?filter[field]=value`, AND/OR logic; 403 when the policy hides the attribute) | `GlobalController.php` (Spatie Query Builder) |
+| 9 | **Sorting** (`?sort=-created_at,title`; 403 when the policy hides the attribute, `$defaultSort` exempt) | `GlobalController.php` |
+| 10 | **Full-Text Search** (`?search=term`, dot-notation for relationships; skips hidden columns, fails closed when all are hidden) | `GlobalController.php` |
+| 10a | **Named Scopes** (`?scope=name` or `?scope[name][param]=value` with model-declared parameters, up to 3 per request; model-whitelisted Eloquent scopes + `$defaultScope` + policy `permittedScopes()`, user injected, 403 on non-whitelisted/denied/bad arguments; index/trashed/computed only) | `GlobalController.php`, `Support/ScopeSpec.php`, `RhinoModel.php`, `Contracts/HasPermittedScopes.php` |
 | 11 | **Pagination** (header-based: X-Current-Page, X-Last-Page, X-Per-Page, X-Total) | `GlobalController.php` |
 | 12 | **Field Selection** (`?fields[posts]=id,title`) | `GlobalController.php` |
 | 13 | **Eager Loading** (`?include=user,comments`, nested, Count/Exists suffixes, auth per include) | `GlobalController.php` |

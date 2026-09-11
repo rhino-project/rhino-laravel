@@ -17,13 +17,13 @@ Register a model, get a full REST API instantly.
 | 2 | **Authentication** | Login, logout, password recovery/reset, invitation-based registration via Sanctum. |
 | 3 | **Authorization & Policies** | Convention-based permission checks (`{slug}.{action}`), wildcard support. |
 | 4 | **Role-Based Access Control** | Per-org roles via `user_roles` pivot table. |
-| 5 | **Attribute-Level Permissions** | Control which fields each role can read and write. |
+| 5 | **Attribute-Level Permissions** | Control which fields each role can read and write. A field a role cannot read is also refused as a `?filter[]` or a `?sort`, and skipped by `?search=`. |
 | 6 | **Validation** | Dual-layer: format rules + field presence. Supports role-keyed rules. |
 | 7 | **Cross-Tenant FK Validation** | `exists:` rules auto-scoped to current org, even through indirect FK relationships. |
 | 8 | **Filtering** | `?filter[field]=value` with AND/OR logic. |
 | 9 | **Sorting** | `?sort=-created_at,title` — ascending and descending. |
 | 10 | **Full-Text Search** | `?search=term` across configured fields, supports relationship dot notation. |
-| 10a | **Named Scopes** | `?scope=name` applies a model-whitelisted Eloquent named scope (with an optional `$defaultScope`); the current user is injected; non-whitelisted names return 403. Applies to index/trashed. |
+| 10a | **Named Scopes** | `?scope=name` applies a model-whitelisted Eloquent named scope (with an optional `$defaultScope`); the current user is injected. A scope may declare parameters the client fills in with `?scope[name][param]=value`, and up to three scopes may be combined. Non-whitelisted names, scopes the policy's `permittedScopes()` denies, and arguments that do not match the declared parameters return 403. Applies to index/trashed. |
 | 11 | **Pagination** | Header-based metadata (`X-Current-Page`, `X-Last-Page`, `X-Per-Page`, `X-Total`). |
 | 12 | **Field Selection** | `?fields[posts]=id,title,status` to reduce payload. |
 | 13 | **Eager Loading** | `?include=user,comments` with nested, Count/Exists suffixes, and auth per include. |

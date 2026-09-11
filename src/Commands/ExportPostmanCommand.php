@@ -265,7 +265,9 @@ class ExportPostmanCommand extends Command
             'allowedFields' => is_array($allowedFields) ? $allowedFields : [],
             'allowedIncludes' => is_array($allowedIncludes) ? $allowedIncludes : [],
             'allowedSearch' => is_array($allowedSearch) ? $allowedSearch : [],
-            'allowedScopes' => is_array($allowedScopes) ? $allowedScopes : [],
+            // name => ['params' => [...], 'optional' => [...]], so the collection
+            // can show a scope's arguments the way a client must send them.
+            'allowedScopes' => \Rhino\Support\ScopeSpec::normalize(is_array($allowedScopes) ? $allowedScopes : []),
             'collectionComputedAttributes' => $collectionComputed,
             'recordComputedAttributes' => $recordComputed,
             'defaultSort' => $defaultSort,
@@ -459,8 +461,26 @@ class ExportPostmanCommand extends Command
             $requests[] = $this->requestItem('Search', 'GET', $basePath, ['search' => 'example'], $headers);
         }
 
-        foreach ($modelMeta['allowedScopes'] ?? [] as $scope) {
-            $requests[] = $this->requestItem('Scope ' . $scope, 'GET', $basePath, ['scope' => $scope], $headers);
+        foreach ($modelMeta['allowedScopes'] ?? [] as $scope => $spec) {
+            $params = $spec['params'] ?? [];
+
+            if ($params === []) {
+                $requests[] = $this->requestItem('Scope ' . $scope, 'GET', $basePath, ['scope' => $scope], $headers);
+
+                continue;
+            }
+
+            // A scope with parameters is sent in the bracket form: one bare value
+            // for a single parameter, named keys for more than one.
+            $query = count($params) === 1
+                ? ['scope[' . $scope . ']' => 'example']
+                : [];
+
+            foreach (count($params) === 1 ? [] : $params as $param) {
+                $query['scope[' . $scope . '][' . $param . ']'] = 'example';
+            }
+
+            $requests[] = $this->requestItem('Scope ' . $scope, 'GET', $basePath, $query, $headers);
         }
 
         $requests[] = $this->requestItem('Paginate', 'GET', $basePath, ['per_page' => '5', 'page' => '1'], $headers);

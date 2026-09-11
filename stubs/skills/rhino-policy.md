@@ -17,13 +17,15 @@ Ask:
 - Per role, which fields can be set on create?
 - Per role, which fields can be set on update?
 - Any custom authorization logic? (e.g., only the author can delete)
+- Which named scopes (`?scope=`) may each role select? Anything not restricted here stays available to everyone who can list the resource.
 
 ## Step 3: Generate Policy
 
 Create the policy extending ResourcePolicy:
 - Override action methods only where custom logic is needed
 - Implement hiddenColumns() for role-based column visibility
-- Implement permittedAttributesForShow/Create/Update
+- Implement permittedAttributesForShow/Create/Update (a hidden field is also refused as a ?filter[]/?sort and skipped by ?search=)
+- Implement permittedScopes() when a role must not reach every named scope
 - Use rolesInOrganization() pattern for role checking
 
 ## Step 4: Generate Tests

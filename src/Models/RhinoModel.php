@@ -241,17 +241,39 @@ abstract class RhinoModel extends Model
      * Arbitrary methods are NOT callable — only whitelisted named scopes are
      * ever dispatched. Applies to `index` and `trashed` listings only.
      *
+     * A scope may declare parameters the client fills in. Declare them in the
+     * order the scope method takes them; a parameter listed under 'optional'
+     * may be left out.
+     *
      * @example
      * ```php
-     * public static $allowedScopes = ['availableForDrivers', 'active'];
+     * public static $allowedScopes = [
+     *     'availableForDrivers',                       // no parameters
+     *     'active',
+     *     'since' => 'date',                           // one parameter
+     *     'window' => ['from', 'to'],                  // two, both required
+     *     'archived' => ['params' => ['before', 'after'], 'optional' => ['after']],
+     * ];
      * ```
      *
-     * Query: `GET /api/routes?scope=availableForDrivers`
+     * Queries:
+     * `GET /api/routes?scope=availableForDrivers`
+     * `GET /api/routes?scope[since]=2026-01-01`
+     * `GET /api/routes?scope[window][from]=2026-01-01&scope[window][to]=2026-02-01`
      *
-     * The scope method receives the current sanctum user as its first argument:
-     * `public function scopeAvailableForDrivers(Builder $query, ?Authenticatable $user)`
+     * Up to three scopes may be combined in the bracket form, and they apply in
+     * the order the URL lists them. The two forms cannot be mixed, since they
+     * share the `scope` query key; write a no-argument scope as
+     * `?scope[archived]=` when combining it with one that takes arguments.
      *
-     * @var array<int,string>
+     * The scope method receives the current sanctum user as its first argument,
+     * then the declared parameters in order:
+     * `public function scopeWindow(Builder $query, ?Authenticatable $user, $from, $to)`
+     *
+     * A scope with no declared parameters never receives client input: sending
+     * any is a 403.
+     *
+     * @var array<int|string,mixed>
      */
     public static $allowedScopes = [];
 

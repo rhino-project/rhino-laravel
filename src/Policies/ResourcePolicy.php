@@ -5,8 +5,9 @@ namespace Rhino\Policies;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Rhino\Contracts\HasHiddenColumns;
 use Rhino\Contracts\HasPermittedAttributes;
+use Rhino\Contracts\HasPermittedScopes;
 
-class ResourcePolicy implements HasHiddenColumns, HasPermittedAttributes
+class ResourcePolicy implements HasHiddenColumns, HasPermittedAttributes, HasPermittedScopes
 {
     /**
      * The resource slug used for permission checks (e.g., 'posts', 'blogs').
@@ -204,6 +205,25 @@ class ResourcePolicy implements HasHiddenColumns, HasPermittedAttributes
     public function hiddenAttributesForShow(?Authenticatable $user): array
     {
         return [];
+    }
+
+    /**
+     * Named scopes the user may select with `?scope=`.
+     *
+     * Return `['*']` to allow every scope the model declares in
+     * `$allowedScopes` (default). Override in your child policy to restrict
+     * per-role. The model's declaration still applies: this can only narrow it.
+     *
+     * The model's `$defaultScope` is applied by the server when the client
+     * sends no scope at all, so it is not subject to this list. Requesting it
+     * by name is.
+     *
+     * @param  \Illuminate\Contracts\Auth\Authenticatable|null  $user
+     * @return array<string>
+     */
+    public function permittedScopes(?Authenticatable $user): array
+    {
+        return ['*'];
     }
 
     /**
