@@ -25,6 +25,13 @@ use Rhino\Exceptions\InvalidScopeArguments;
 class ScopeSpec
 {
     /**
+     * The noun every scope-argument error message starts with. The binding
+     * algorithm itself lives in ArgumentBinder and is shared with computed
+     * attributes; this constant is what keeps the scope wording its own.
+     */
+    protected const SUBJECT = 'Scope';
+
+    /**
      * Normalize a raw `$allowedScopes` array into
      * `name => ['params' => [...], 'optional' => [...]]`.
      *
@@ -52,17 +59,13 @@ class ScopeSpec
             if (is_string($value)) {
                 $params = [$value];
             } elseif (is_array($value) && (array_key_exists('params', $value) || array_key_exists('optional', $value))) {
-                $params = array_values(array_map('strval', (array) ($value['params'] ?? [])));
-                $optional = array_values(array_map('strval', (array) ($value['optional'] ?? [])));
+                $params = (array) ($value['params'] ?? []);
+                $optional = (array) ($value['optional'] ?? []);
             } elseif (is_array($value)) {
-                $params = array_values(array_map('strval', $value));
+                $params = $value;
             }
 
-            $out[$name] = [
-                'params' => $params,
-                // An 'optional' entry that is not a declared parameter is meaningless.
-                'optional' => array_values(array_intersect($optional, $params)),
-            ];
+            $out[$name] = ArgumentBinder::normalizeParams($params, $optional);
         }
 
         return $out;
@@ -94,39 +97,7 @@ class ScopeSpec
      */
     public static function bind(string $name, array $spec, $raw): array
     {
-        $params = $spec['params'];
-        $optional = $spec['optional'];
-
-        $given = static::normalizeRawArguments($name, $params, $raw);
-
-        foreach (array_keys($given) as $key) {
-            if (! in_array($key, $params, true)) {
-                throw new InvalidScopeArguments("Scope '{$name}' does not accept parameter '{$key}'");
-            }
-        }
-
-        $args = [];
-        foreach ($params as $param) {
-            if (array_key_exists($param, $given)) {
-                $args[] = static::coerce($given[$param]);
-
-                continue;
-            }
-
-            if (! in_array($param, $optional, true)) {
-                throw new InvalidScopeArguments("Scope '{$name}' requires parameter '{$param}'");
-            }
-
-            $args[] = null;
-        }
-
-        // Drop trailing nulls so an omitted optional parameter falls back to the
-        // default declared in the scope's own signature.
-        while ($args !== [] && end($args) === null) {
-            array_pop($args);
-        }
-
-        return $args;
+        return ArgumentBinder::bind(static::SUBJECT, $name, $spec, $raw, static::failure());
     }
 
     /**
@@ -139,50 +110,7 @@ class ScopeSpec
      */
     protected static function normalizeRawArguments(string $name, array $params, $raw): array
     {
-        // `?scope[archived]=` (or a bare `?scope[archived]`): no arguments.
-        // A scope with required parameters still fails, in bind(), naming them.
-        if ($raw === null || $raw === '') {
-            return [];
-        }
-
-        if (is_scalar($raw)) {
-            if ($params === []) {
-                throw new InvalidScopeArguments("Scope '{$name}' does not accept arguments");
-            }
-
-            // A bare value binds to the first declared parameter. Only allowed
-            // when there is exactly one, so two parameters can never be guessed
-            // at from a single value.
-            if (count($params) > 1) {
-                throw new InvalidScopeArguments("Scope '{$name}' requires named parameters");
-            }
-
-            return [$params[0] => $raw];
-        }
-
-        if (! is_array($raw)) {
-            throw new InvalidScopeArguments("Scope '{$name}' is not allowed");
-        }
-
-        if ($params === []) {
-            throw new InvalidScopeArguments("Scope '{$name}' does not accept arguments");
-        }
-
-        // A positional list (`scope[between][]=a`) is deliberately not supported:
-        // every argument is named.
-        foreach (array_keys($raw) as $key) {
-            if (! is_string($key)) {
-                throw new InvalidScopeArguments("Scope '{$name}' requires named parameters");
-            }
-        }
-
-        foreach ($raw as $value) {
-            if (! is_scalar($value) && $value !== null) {
-                throw new InvalidScopeArguments("Scope '{$name}' requires named parameters");
-            }
-        }
-
-        return $raw;
+        return ArgumentBinder::normalizeRawArguments(static::SUBJECT, $name, $params, $raw, static::failure());
     }
 
     /**
@@ -191,20 +119,16 @@ class ScopeSpec
      */
     protected static function coerce($value)
     {
-        if (! is_string($value)) {
-            return $value;
-        }
+        return ArgumentBinder::coerce($value);
+    }
 
-        $lowered = strtolower($value);
-
-        if ($lowered === 'true') {
-            return true;
-        }
-
-        if ($lowered === 'false') {
-            return false;
-        }
-
-        return $value;
+    /**
+     * The exception the binder raises for this subject.
+     *
+     * @return callable(string): InvalidScopeArguments
+     */
+    protected static function failure(): callable
+    {
+        return fn (string $message) => new InvalidScopeArguments($message);
     }
 }

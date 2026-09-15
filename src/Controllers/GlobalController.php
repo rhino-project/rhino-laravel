@@ -11,7 +11,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Facades\Log;
 use Rhino\Contracts\HasPermittedAttributes;
 use Rhino\Contracts\HasPermittedScopes;
+use Rhino\Exceptions\InvalidComputedAttributeArguments;
 use Rhino\Exceptions\InvalidScopeArguments;
+use Rhino\Support\ComputedAttributeSpec;
 use Rhino\Support\ScopeSpec;
 use Spatie\QueryBuilder\AllowedFilter;
 use Spatie\QueryBuilder\AllowedSort;
@@ -103,7 +105,7 @@ class GlobalController extends Controller
      *
      * Models without HidableColumns fall back to toArray().
      */
-    protected function serializeRecord($record, array $computedAttributes = []): array
+    protected function serializeRecord($record, array $computedAttributes = [], array $computedArguments = []): array
     {
         if (method_exists($record, 'asRhinoJson')) {
             try {
@@ -111,7 +113,7 @@ class GlobalController extends Controller
             } catch (\InvalidArgumentException $e) {
                 $user = auth()->user();
             }
-            return $record->asRhinoJson($user, $computedAttributes);
+            return $record->asRhinoJson($user, $computedAttributes, $computedArguments);
         }
 
         return $record->toArray();
@@ -122,13 +124,36 @@ class GlobalController extends Controller
      *
      * @param  array<string>  $computedAttributes  Opt-in record-level computed
      *   attributes selected by the client via `?computed_attributes=`.
+     * @param  array<string, array<int, mixed>>  $computedArguments  Positional
+     *   arguments per attribute name, bound from the bracket query form.
      */
-    protected function serializeCollection($records, array $computedAttributes = []): array
+    protected function serializeCollection($records, array $computedAttributes = [], array $computedArguments = []): array
     {
         return collect($records)
-            ->map(fn ($record) => $this->serializeRecord($record, $computedAttributes))
+            ->map(fn ($record) => $this->serializeRecord($record, $computedAttributes, $computedArguments))
             ->values()
             ->all();
+    }
+
+    /**
+     * Accept either shape a computed-attribute resolver may return: the
+     * `['names' => [...], 'arguments' => [...]]` map this version produces, or
+     * a plain list of names, which is what an application that overrode
+     * resolveRequestedComputedAttributes() before 4.9.0 still returns.
+     *
+     * @param  mixed  $selection
+     * @return array{names: array<string>, arguments: array<string, array<int, mixed>>}
+     */
+    protected function normalizeComputedSelection($selection): array
+    {
+        if (is_array($selection) && isset($selection['names']) && is_array($selection['names'])) {
+            return [
+                'names' => array_values($selection['names']),
+                'arguments' => is_array($selection['arguments'] ?? null) ? $selection['arguments'] : [],
+            ];
+        }
+
+        return ['names' => array_values((array) $selection), 'arguments' => []];
     }
 
     // ------------------------------------------------------------------
@@ -140,10 +165,11 @@ class GlobalController extends Controller
         $this->resolveModelClass($this->getModelSlug($request));
         Gate::forUser(auth('sanctum')->user())->authorize('viewAny', $this->modelClass::class);
 
-        $computedAttributes = $this->resolveRequestedComputedAttributes($request);
-        if ($computedAttributes instanceof \Illuminate\Http\JsonResponse) {
-            return $computedAttributes;
+        $computedSelection = $this->resolveRequestedComputedAttributes($request);
+        if ($computedSelection instanceof \Illuminate\Http\JsonResponse) {
+            return $computedSelection;
         }
+        $computedSelection = $this->normalizeComputedSelection($computedSelection);
 
         $query = QueryBuilder::for($this->modelClass::class);
 
@@ -195,14 +221,14 @@ class GlobalController extends Controller
 
             $paginator = $query->paginate($perPage);
 
-            return response()->json(['data' => $this->serializeCollection($paginator->items(), $computedAttributes)])
+            return response()->json(['data' => $this->serializeCollection($paginator->items(), $computedSelection['names'], $computedSelection['arguments'])])
                 ->header('X-Current-Page', $paginator->currentPage())
                 ->header('X-Last-Page', $paginator->lastPage())
                 ->header('X-Per-Page', $paginator->perPage())
                 ->header('X-Total', $paginator->total());
         }
 
-        return response()->json(['data' => $this->serializeCollection($query->get(), $computedAttributes)]);
+        return response()->json(['data' => $this->serializeCollection($query->get(), $computedSelection['names'], $computedSelection['arguments'])]);
     }
 
     public function store(Request $request)
@@ -279,10 +305,11 @@ class GlobalController extends Controller
         $object = $query->firstOrFail();
         Gate::forUser(auth('sanctum')->user())->authorize('view', $object);
 
-        $computedAttributes = $this->resolveRequestedComputedAttributes($request);
-        if ($computedAttributes instanceof \Illuminate\Http\JsonResponse) {
-            return $computedAttributes;
+        $computedSelection = $this->resolveRequestedComputedAttributes($request);
+        if ($computedSelection instanceof \Illuminate\Http\JsonResponse) {
+            return $computedSelection;
         }
+        $computedSelection = $this->normalizeComputedSelection($computedSelection);
 
         if (property_exists($this->modelClass, 'allowedFields')) {
             $query = $query->allowedFields($this->modelClass::$allowedFields);
@@ -297,7 +324,7 @@ class GlobalController extends Controller
 
         $model = $query->firstOrFail();
 
-        return response()->json($this->serializeRecord($model, $computedAttributes));
+        return response()->json($this->serializeRecord($model, $computedSelection['names'], $computedSelection['arguments']));
     }
 
     public function update(Request $request)
@@ -419,7 +446,13 @@ class GlobalController extends Controller
      * the numbers describe exactly the set `index` would have listed. Sorting,
      * sparse fieldsets, includes and pagination are deliberately NOT applied.
      *
-     * Omitting `?attributes=` returns every declared attribute the policy allows.
+     * Omitting `?attributes=` returns every declared attribute the policy allows,
+     * minus any that declares a required parameter — those are skipped silently
+     * so adding a parameterised attribute never breaks a bare `/computed` call.
+     *
+     * Attributes that declare parameters take them in the bracket form:
+     *
+     *   ?attributes[revenue][from]=2026-01-01&attributes[revenue][to]=2026-02-01
      */
     public function computed(Request $request)
     {
@@ -428,11 +461,13 @@ class GlobalController extends Controller
         Gate::forUser($user)->authorize('viewAny', $this->modelClass::class);
 
         $declared = $this->collectionComputedAttributes();
+        $specs = ComputedAttributeSpec::normalize($declared);
 
-        $names = $this->resolveRequestedCollectionAttributes($request, $declared, $user);
-        if ($names instanceof \Illuminate\Http\JsonResponse) {
-            return $names;
+        $selection = $this->resolveRequestedCollectionAttributes($request, $declared, $user);
+        if ($selection instanceof \Illuminate\Http\JsonResponse) {
+            return $selection;
         }
+        $selection = $this->normalizeComputedSelection($selection);
 
         $query = QueryBuilder::for($this->modelClass::class);
 
@@ -456,12 +491,18 @@ class GlobalController extends Controller
         $this->applySearch($query, $request);
 
         $data = [];
-        foreach ($names as $name) {
-            $callback = $declared[$name];
+        foreach ($selection['names'] as $name) {
+            $spec = $specs[$name] ?? ['params' => [], 'optional' => [], 'using' => null];
+            $callback = $spec['using'];
+            $arguments = $selection['arguments'][$name] ?? [];
+
             // Every attribute gets its OWN clone so one callable's constraints
-            // can never leak into the next one's result.
+            // can never leak into the next one's result. Client arguments are
+            // appended after the builder and the user, in declared order — the
+            // builder handed over is already organization-scoped, filtered and
+            // searched, and no argument can widen it.
             $data[$name] = is_callable($callback)
-                ? $callback($query->clone()->getEloquentBuilder(), $user)
+                ? $callback($query->clone()->getEloquentBuilder(), $user, ...$arguments)
                 : $callback;
         }
 
@@ -485,68 +526,79 @@ class GlobalController extends Controller
     }
 
     /**
-     * Parse and authorize `?attributes=a,b` for the /computed endpoint.
+     * Parse and authorize `?attributes=` for the /computed endpoint, in every
+     * accepted form:
      *
-     * Returns the validated list of names, or a 403 JsonResponse. An undeclared
-     * name and a policy-denied name produce the SAME error so the endpoint never
-     * reveals which attributes a model declares.
+     *   ?attributes=a,b                       legacy comma list, no arguments
+     *   ?attributes[revenue]=                 one name, no arguments
+     *   ?attributes[since]=2026-01-01         binds to the single declared param
+     *   ?attributes[revenue][from]=a&...      named arguments
+     *
+     * Returns `['names' => [...], 'arguments' => [name => [...positional]]]`,
+     * or a 403 JsonResponse. An undeclared name and a policy-denied name produce
+     * the SAME error so the endpoint never reveals which attributes a model
+     * declares — and both checks run BEFORE any argument binding, so the more
+     * specific argument messages can only ever be seen for a name the caller was
+     * already allowed to use.
      *
      * @param  array<string, mixed>  $declared
-     * @return array<string>|\Illuminate\Http\JsonResponse
+     * @return array{names: array<string>, arguments: array<string, array<int, mixed>>}|\Illuminate\Http\JsonResponse
      */
     protected function resolveRequestedCollectionAttributes(Request $request, array $declared, $user)
     {
         $raw = $request->input('attributes');
+        $specs = ComputedAttributeSpec::normalize($declared);
 
-        // Reject non-string input (?attributes[]=x) before any interpolation.
-        if ($raw !== null && ! is_string($raw)) {
-            return response()->json(['message' => 'Computed attributes are not allowed'], 403);
-        }
-
-        if ($raw === null || trim($raw) === '') {
-            // No selection: every declared attribute the policy allows.
-            return array_values(array_filter(
-                array_keys($declared),
-                fn ($name) => $this->computedAttributeAllowed($name, $user)
-            ));
-        }
-
-        $names = $this->parseAttributeList($raw);
-
-        foreach ($names as $name) {
-            if (! array_key_exists($name, $declared) || ! $this->computedAttributeAllowed($name, $user)) {
-                return response()->json(['message' => "Computed attribute '{$name}' is not allowed"], 403);
+        if ($raw === null || (is_string($raw) && trim($raw) === '')) {
+            // No selection: every declared attribute the policy allows, minus
+            // the ones that cannot run without client arguments.
+            $names = [];
+            foreach ($specs as $name => $spec) {
+                if (! $this->computedAttributeAllowed($name, $user)) {
+                    continue;
+                }
+                if (ComputedAttributeSpec::requiresArguments($spec)) {
+                    continue;
+                }
+                $names[] = (string) $name;
             }
+
+            return ['names' => $names, 'arguments' => []];
         }
 
-        return $names;
+        $requested = $this->parseAttributeSelection($raw);
+        if ($requested instanceof \Illuminate\Http\JsonResponse) {
+            return $requested;
+        }
+
+        return $this->bindAttributeSelection($requested, $specs, $user);
     }
 
     /**
-     * Parse and authorize `?computed_attributes=a,b` for index/show/trashed —
-     * the OPT-IN record-level computed attributes.
+     * Parse and authorize `?computed_attributes=` for index/show/trashed — the
+     * OPT-IN record-level computed attributes. Accepts the same four forms as
+     * `?attributes=` (see resolveRequestedCollectionAttributes()).
      *
-     * Returns the validated list of names, or a 403 JsonResponse. Absent or
-     * empty means "none", which is byte-for-byte the pre-feature behavior.
+     * Absent or empty means "none", which is byte-for-byte the pre-feature
+     * behavior.
      *
-     * @return array<string>|\Illuminate\Http\JsonResponse
+     * @return array{names: array<string>, arguments: array<string, array<int, mixed>>}|\Illuminate\Http\JsonResponse
      */
     protected function resolveRequestedComputedAttributes(Request $request)
     {
         $raw = $request->input('computed_attributes');
 
         if ($raw === null || $raw === '') {
-            return [];
+            return ['names' => [], 'arguments' => []];
         }
 
-        // Reject non-string input (?computed_attributes[]=x).
-        if (! is_string($raw)) {
-            return response()->json(['message' => 'Computed attributes are not allowed'], 403);
+        $requested = $this->parseAttributeSelection($raw);
+        if ($requested instanceof \Illuminate\Http\JsonResponse) {
+            return $requested;
         }
 
-        $names = $this->parseAttributeList($raw);
-        if (empty($names)) {
-            return [];
+        if ($requested === []) {
+            return ['names' => [], 'arguments' => []];
         }
 
         $declared = method_exists($this->modelClass, 'rhinoRecordComputedAttributes')
@@ -554,15 +606,77 @@ class GlobalController extends Controller
             : [];
         $declared = is_array($declared) ? $declared : [];
 
-        $user = auth('sanctum')->user();
+        return $this->bindAttributeSelection(
+            $requested,
+            ComputedAttributeSpec::normalize($declared),
+            auth('sanctum')->user()
+        );
+    }
 
-        foreach ($names as $name) {
-            if (! array_key_exists($name, $declared) || ! $this->computedAttributeAllowed($name, $user)) {
-                return response()->json(['message' => "Computed attribute '{$name}' is not allowed"], 403);
-            }
+    /**
+     * Turn the raw query value into an ordered list of `[name, rawArguments]`
+     * pairs — a list rather than a map, because PHP would coerce a numeric
+     * attribute name back to an int key.
+     *
+     * @param  mixed  $raw
+     * @return array<int, array{0: string, 1: mixed}>|\Illuminate\Http\JsonResponse
+     */
+    protected function parseAttributeSelection($raw)
+    {
+        if (is_string($raw)) {
+            return array_map(
+                fn ($name) => [$name, ''],
+                $this->parseAttributeList($raw)
+            );
         }
 
-        return $names;
+        if (! is_array($raw)) {
+            return response()->json(['message' => 'Computed attributes are not allowed'], 403);
+        }
+
+        $pairs = [];
+        foreach ($raw as $key => $value) {
+            // A positional list (?attributes[]=x) or a blank key names nothing:
+            // reject before any lookup.
+            if (! is_string($key) || $key === '') {
+                return response()->json(['message' => 'Computed attributes are not allowed'], 403);
+            }
+
+            $pairs[] = [$key, $value];
+        }
+
+        return $pairs;
+    }
+
+    /**
+     * Gate every requested attribute, then bind its arguments.
+     *
+     * @param  array<int, array{0: string, 1: mixed}>  $requested
+     * @param  array<string, array{params: array<string>, optional: array<string>, using: mixed}>  $specs
+     * @return array{names: array<string>, arguments: array<string, array<int, mixed>>}|\Illuminate\Http\JsonResponse
+     */
+    protected function bindAttributeSelection(array $requested, array $specs, $user)
+    {
+        $names = [];
+        $arguments = [];
+
+        foreach ($requested as [$name, $rawArguments]) {
+            // Gate first — declared AND policy-visible — so nothing below can
+            // distinguish an undeclared name from a forbidden one.
+            if (! array_key_exists($name, $specs) || ! $this->computedAttributeAllowed($name, $user)) {
+                return response()->json(['message' => "Computed attribute '{$name}' is not allowed"], 403);
+            }
+
+            try {
+                $arguments[$name] = ComputedAttributeSpec::bind($name, $specs[$name], $rawArguments);
+            } catch (InvalidComputedAttributeArguments $e) {
+                return response()->json(['message' => $e->getMessage()], 403);
+            }
+
+            $names[] = $name;
+        }
+
+        return ['names' => array_values(array_unique($names)), 'arguments' => $arguments];
     }
 
     /**
@@ -599,10 +713,11 @@ class GlobalController extends Controller
 
         Gate::forUser(auth('sanctum')->user())->authorize('viewTrashed', $this->modelClass::class);
 
-        $computedAttributes = $this->resolveRequestedComputedAttributes($request);
-        if ($computedAttributes instanceof \Illuminate\Http\JsonResponse) {
-            return $computedAttributes;
+        $computedSelection = $this->resolveRequestedComputedAttributes($request);
+        if ($computedSelection instanceof \Illuminate\Http\JsonResponse) {
+            return $computedSelection;
         }
+        $computedSelection = $this->normalizeComputedSelection($computedSelection);
 
         $query = QueryBuilder::for($this->modelClass::class)->onlyTrashed();
 
@@ -651,14 +766,14 @@ class GlobalController extends Controller
 
             $paginator = $query->paginate($perPage);
 
-            return response()->json(['data' => $this->serializeCollection($paginator->items(), $computedAttributes)])
+            return response()->json(['data' => $this->serializeCollection($paginator->items(), $computedSelection['names'], $computedSelection['arguments'])])
                 ->header('X-Current-Page', $paginator->currentPage())
                 ->header('X-Last-Page', $paginator->lastPage())
                 ->header('X-Per-Page', $paginator->perPage())
                 ->header('X-Total', $paginator->total());
         }
 
-        return response()->json(['data' => $this->serializeCollection($query->get(), $computedAttributes)]);
+        return response()->json(['data' => $this->serializeCollection($query->get(), $computedSelection['names'], $computedSelection['arguments'])]);
     }
 
     /**

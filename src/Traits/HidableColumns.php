@@ -149,9 +149,15 @@ trait HidableColumns
      * providing a consistent serialization entry point across all frameworks.
      *
      * @param  mixed  $user  The authenticated user (or null for guests)
+     * @param  array<string>  $requestedComputedAttributes  Opt-in record-level
+     *   computed attributes to evaluate, selected via `?computed_attributes=`.
+     * @param  array<string, array<int, mixed>>  $computedArguments  Positional
+     *   arguments per attribute name. An attribute with required parameters and
+     *   no entry here is skipped rather than called with too few arguments, so
+     *   an existing direct caller that passes only names keeps working.
      * @return array<string, mixed>
      */
-    public function asRhinoJson($user = null, array $requestedComputedAttributes = []): array
+    public function asRhinoJson($user = null, array $requestedComputedAttributes = [], array $computedArguments = []): array
     {
         // Set flag so getHidden() returns [] — we handle filtering explicitly below.
         $this->asRhinoJsonActive = true;
@@ -172,7 +178,11 @@ trait HidableColumns
         // for by name, so declaring an expensive attribute costs nothing on the
         // requests that don't want it. Merged before policy filtering, so the
         // blacklist/whitelist below still governs them.
-        $result = array_merge($result, $this->rhinoResolveRecordComputedAttributes($requestedComputedAttributes, $user));
+        $result = array_merge($result, $this->rhinoResolveRecordComputedAttributes(
+            $requestedComputedAttributes,
+            $user,
+            $computedArguments
+        ));
 
         // Apply blacklist (base + additional + policy)
         $hidden = $this->resolveAllHiddenColumns($user);
@@ -239,6 +249,12 @@ trait HidableColumns
      *
      * Return a map of attribute name => callable($record, $user).
      *
+     * An attribute may also declare PARAMETERS the client supplies as
+     * `?computed_attributes[name][param]=value`. Use the extended form — a map
+     * carrying `params` (and optionally `optional` and `using`) — and the bound
+     * arguments are appended after $user, in declared order. Any other declared
+     * value (a callable, a scalar, a plain list) keeps its current meaning.
+     *
      * @example
      * ```php
      * public function rhinoRecordComputedAttributes(): array
@@ -246,11 +262,17 @@ trait HidableColumns
      *     return [
      *         'open_tickets_count' => fn ($record, $user) => $record->tickets()->whereNull('closed_at')->count(),
      *         'avatar_url' => fn ($record, $user) => Storage::url($record->avatar_path),
+     *         'tickets_since' => [
+     *             'params'   => ['since', 'status'],
+     *             'optional' => ['status'],
+     *             'using'    => fn ($record, $user, $since, $status = null) =>
+     *                 $record->tickets()->where('created_at', '>=', $since)->count(),
+     *         ],
      *     ];
      * }
      * ```
      *
-     * @return array<string, callable>
+     * @return array<string, mixed>
      */
     public function rhinoRecordComputedAttributes(): array
     {
@@ -269,6 +291,13 @@ trait HidableColumns
      * Declaring at least one attribute here is what registers the
      * `/computed` route for the model.
      *
+     * An attribute may also declare PARAMETERS the client supplies as
+     * `?attributes[name][param]=value`. Use the extended form — a map carrying
+     * `params` (and optionally `optional` and `using`) — and the bound arguments
+     * are appended after $user, in declared order. An attribute with a REQUIRED
+     * parameter is skipped by a bare `GET /computed` rather than 403'd, so
+     * adding one never breaks a client that asks for everything.
+     *
      * @example
      * ```php
      * public static function rhinoCollectionComputedAttributes(): array
@@ -276,11 +305,16 @@ trait HidableColumns
      *     return [
      *         'active_users_count' => fn ($query, $user) => $query->where('status', 'active')->count(),
      *         'blocked_users_count' => fn ($query, $user) => $query->where('status', 'blocked')->count(),
+     *         'revenue' => [
+     *             'params' => ['from', 'to'],
+     *             'using'  => fn ($query, $user, $from, $to) =>
+     *                 $query->whereBetween('created_at', [$from, $to])->sum('total'),
+     *         ],
      *     ];
      * }
      * ```
      *
-     * @return array<string, callable>
+     * @return array<string, mixed>
      */
     public static function rhinoCollectionComputedAttributes(): array
     {
@@ -294,11 +328,17 @@ trait HidableColumns
      * already rejected unknown/forbidden names with a 403, and a direct
      * asRhinoJson() caller should not be able to force an arbitrary call.
      *
+     * An attribute that declares a required parameter is likewise skipped when
+     * $arguments carries no entry for it, so a custom controller calling
+     * asRhinoJson($user, ['tickets_since']) gets a missing key rather than an
+     * ArgumentCountError.
+     *
      * @param  array<string>  $names
      * @param  mixed  $user
+     * @param  array<string, array<int, mixed>>  $arguments
      * @return array<string, mixed>
      */
-    protected function rhinoResolveRecordComputedAttributes(array $names, $user): array
+    protected function rhinoResolveRecordComputedAttributes(array $names, $user, array $arguments = []): array
     {
         if (empty($names)) {
             return [];
@@ -309,14 +349,26 @@ trait HidableColumns
             return [];
         }
 
+        $specs = \Rhino\Support\ComputedAttributeSpec::normalize($declared);
+
         $resolved = [];
         foreach ($names as $name) {
-            if (!is_string($name) || !array_key_exists($name, $declared)) {
+            if (!is_string($name) || !array_key_exists($name, $specs)) {
                 continue;
             }
 
-            $callback = $declared[$name];
-            $resolved[$name] = is_callable($callback) ? $callback($this, $user) : $callback;
+            $spec = $specs[$name];
+
+            if (array_key_exists($name, $arguments)) {
+                $args = array_values((array) $arguments[$name]);
+            } elseif (\Rhino\Support\ComputedAttributeSpec::requiresArguments($spec)) {
+                continue;
+            } else {
+                $args = [];
+            }
+
+            $callback = $spec['using'];
+            $resolved[$name] = is_callable($callback) ? $callback($this, $user, ...$args) : $callback;
         }
 
         return $resolved;

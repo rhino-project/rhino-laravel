@@ -239,17 +239,19 @@ class ExportPostmanCommand extends Command
         $allowedScopes = $this->getModelProperty($modelClass, 'allowedScopes', []);
         $defaultSort = $this->getModelProperty($modelClass, 'defaultSort', null);
 
-        // Computed attributes: names only (the callables never leave the server).
+        // Computed attributes: names and parameter specs only — the callables
+        // never leave the server. The spec is what lets the collection show a
+        // parameterised attribute the way a client must actually send it.
         $collectionComputed = [];
         if (method_exists($modelClass, 'rhinoCollectionComputedAttributes')) {
             $declared = $modelClass::rhinoCollectionComputedAttributes();
-            $collectionComputed = is_array($declared) ? array_keys($declared) : [];
+            $collectionComputed = $this->computedAttributeSpecs($declared);
         }
 
         $recordComputed = [];
         if (method_exists($modelClass, 'rhinoRecordComputedAttributes')) {
             $declared = app()->make($modelClass)->rhinoRecordComputedAttributes();
-            $recordComputed = is_array($declared) ? array_keys($declared) : [];
+            $recordComputed = $this->computedAttributeSpecs($declared);
         }
 
         $validationRules = $this->getModelProperty($modelClass, 'validationRules', []);
@@ -268,6 +270,8 @@ class ExportPostmanCommand extends Command
             // name => ['params' => [...], 'optional' => [...]], so the collection
             // can show a scope's arguments the way a client must send them.
             'allowedScopes' => \Rhino\Support\ScopeSpec::normalize(is_array($allowedScopes) ? $allowedScopes : []),
+            // name => ['params' => [...], 'optional' => [...]] — same shape as
+            // allowedScopes, for the same reason.
             'collectionComputedAttributes' => $collectionComputed,
             'recordComputedAttributes' => $recordComputed,
             'defaultSort' => $defaultSort,
@@ -357,6 +361,77 @@ class ExportPostmanCommand extends Command
     }
 
     /**
+     * Normalize a computed-attribute declaration into the name => parameter-spec
+     * map the collection is built from. Only names and parameter names are kept;
+     * the callables never leave the server.
+     *
+     * @param  mixed  $declared
+     * @return array<string, array{params: array<string>, optional: array<string>}>
+     */
+    private function computedAttributeSpecs($declared): array
+    {
+        if (! is_array($declared)) {
+            return [];
+        }
+
+        $specs = [];
+        foreach (\Rhino\Support\ComputedAttributeSpec::normalize($declared) as $name => $spec) {
+            $specs[$name] = ['params' => $spec['params'], 'optional' => $spec['optional']];
+        }
+
+        return $specs;
+    }
+
+    /**
+     * The query parameters that select one computed attribute, in whichever form
+     * its declaration requires: the plain list when it takes no parameters, the
+     * bracket form when it does.
+     *
+     * @param  array{params: array<string>, optional: array<string>}  $spec
+     * @return array<string, string>
+     */
+    private function computedAttributeQuery(string $key, string $attribute, array $spec): array
+    {
+        $params = $spec['params'] ?? [];
+
+        if ($params === []) {
+            return [$key => $attribute];
+        }
+
+        if (count($params) === 1) {
+            return [$key . '[' . $attribute . ']' => 'example'];
+        }
+
+        $query = [];
+        foreach ($params as $param) {
+            $query[$key . '[' . $attribute . '][' . $param . ']'] = 'example';
+        }
+
+        return $query;
+    }
+
+    /**
+     * The attribute names that can be requested without arguments — the only
+     * ones a combined "give me everything" request may name, since a required
+     * parameter left out is a guaranteed 403.
+     *
+     * @param  array<string, array{params: array<string>, optional: array<string>}>  $specs
+     * @return array<string>
+     */
+    private function argumentFreeComputedAttributes(array $specs): array
+    {
+        $names = [];
+        foreach ($specs as $name => $spec) {
+            if (array_diff($spec['params'] ?? [], $spec['optional'] ?? []) !== []) {
+                continue;
+            }
+            $names[] = (string) $name;
+        }
+
+        return $names;
+    }
+
+    /**
      * Requests for GET {resource}/computed — the collection-level aggregates.
      */
     private function buildComputedRequests(string $basePath, array $modelMeta): array
@@ -369,22 +444,24 @@ class ExportPostmanCommand extends Command
             $this->requestItem('All computed attributes', 'GET', $path, [], $headers),
         ];
 
-        foreach ($attributes as $attribute) {
+        foreach ($attributes as $attribute => $spec) {
             $requests[] = $this->requestItem(
                 'Computed: ' . $attribute,
                 'GET',
                 $path,
-                ['attributes' => $attribute],
+                $this->computedAttributeQuery('attributes', (string) $attribute, $spec),
                 $headers
             );
         }
 
-        if (count($attributes) > 1) {
+        $combinable = $this->argumentFreeComputedAttributes($attributes);
+
+        if (count($combinable) > 1) {
             $requests[] = $this->requestItem(
                 'Computed: multiple attributes',
                 'GET',
                 $path,
-                ['attributes' => implode(',', $attributes)],
+                ['attributes' => implode(',', $combinable)],
                 $headers
             );
         }
@@ -447,12 +524,12 @@ class ExportPostmanCommand extends Command
             );
         }
 
-        foreach ($modelMeta['recordComputedAttributes'] ?? [] as $attribute) {
+        foreach ($modelMeta['recordComputedAttributes'] ?? [] as $attribute => $spec) {
             $requests[] = $this->requestItem(
                 'With computed attribute ' . $attribute,
                 'GET',
                 $basePath,
-                ['computed_attributes' => $attribute],
+                $this->computedAttributeQuery('computed_attributes', (string) $attribute, $spec),
                 $headers
             );
         }
@@ -532,12 +609,12 @@ class ExportPostmanCommand extends Command
             );
         }
 
-        foreach ($modelMeta['recordComputedAttributes'] ?? [] as $attribute) {
+        foreach ($modelMeta['recordComputedAttributes'] ?? [] as $attribute => $spec) {
             $requests[] = $this->requestItem(
                 'Show with computed attribute ' . $attribute,
                 'GET',
                 $path,
-                ['computed_attributes' => $attribute],
+                $this->computedAttributeQuery('computed_attributes', (string) $attribute, $spec),
                 $headers
             );
         }
