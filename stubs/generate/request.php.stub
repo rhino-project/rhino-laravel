@@ -1,0 +1,137 @@
+<?php
+
+namespace App\Http\Requests;
+
+use Rhino\Http\Requests\ResourceRequest;
+
+/**
+ * Validation for {{ actionVerb }} on the {{ modelName }} resource.
+ *
+ * Rhino finds this class by convention — {{ modelName }}{{ actionSuffix }}Request in the
+ * namespace configured by `rhino.requests.namespace` — and runs it for
+ * {{ httpCall }} instead of the model's own $validationRules.
+ *
+ * Everything in the context is reachable through a helper:
+ *
+ *   $this->user()          the authenticated user (null when unauthenticated)
+ *   $this->organization()  the resolved tenant (null outside a tenant group)
+ *   $this->routeGroup()    the matched route's group, e.g. 'tenant' or 'public'
+ *   $this->action()        '{{ action }}'
+ *   $this->record()        {{ recordDoc }}
+ *
+ * IMPORTANT — what you validate is what gets written. Only the keys covered by
+ * a rule that passed are persisted; a field with no rule is dropped silently,
+ * not saved. So declare a rule for EVERY field this action should write, even
+ * if the rule is as loose as 'nullable'.
+ */
+class {{ className }} extends ResourceRequest
+{
+    /**
+     * Reject the whole request (403) before any rule runs.
+     *
+     * The response is byte-identical to a policy denial on purpose, so a client
+     * cannot tell the two apart. Returning false is all you can do — a custom
+     * message would leak why.
+     *
+     * Field-level permissions belong in the policy
+     * (permittedAttributesFor{{ policySuffix }}), not here.
+     */
+    // public function authorize(): bool
+    // {
+    //     // Example: this resource is not writable from the public group.
+    //     return $this->routeGroup() !== 'public';
+    // }
+
+    /**
+     * Normalize the input before authorize(), the rules and the write payload
+     * see it.
+     *
+     * This runs AFTER the policy's forbidden-field check, which inspects
+     * exactly what the client sent — so nothing here can launder a field past
+     * the policy. Whatever you add is server-authored and trusted: set it from
+     * server state, never by copying a client value into another key.
+     *
+     * A key added here is still only persisted if a rule below covers it.
+     *
+     * prepare() runs BEFORE the rules, so the input is still whatever the client
+     * sent — including arrays and nulls where you expected a string. Guard every
+     * cast: trim(['x']) is a fatal "Array to string conversion", not a 422.
+     */
+    // public function prepare(array $input): array
+    // {
+    //     if (is_string($input['title'] ?? null)) {
+    //         $input['title'] = trim($input['title']);
+    //     }
+    //
+    //     // Good: server-authored value.
+    //     // $input['owner_id'] = $this->user()?->id;
+    //
+    //     // Bad: launders a client value into a field the policy may deny.
+    //     // $input['owner_id'] = $input['user_id'] ?? $this->user()?->id;
+    //
+    //     return $input;
+    // }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function rules(): array
+    {
+        return [
+            // ---------------------------------------------------------------
+            // Format rules. Declare one line per field this action writes.
+            // ---------------------------------------------------------------
+            // 'title' => '{{ presence }}|string|max:255',
+            // 'description' => 'nullable|string',
+
+            // ---------------------------------------------------------------
+            // Foreign keys: `exists:` is scoped to the current organization
+            // automatically, including for models that reach their
+            // organization through a relationship rather than a column. Write
+            // the plain rule — do NOT add ',organization_id,N' yourself.
+            // ---------------------------------------------------------------
+            // 'project_id' => '{{ presence }}|integer|exists:projects,id',
+
+            // ---------------------------------------------------------------
+            // Role-dependent rules: branch on the user instead of keying a map
+            // by role slug.
+            // ---------------------------------------------------------------
+            // 'status' => $this->user()?->getRoleSlugForValidation($this->organization()) === 'admin'
+            //     ? '{{ presence }}|string'
+            //     : '{{ presence }}|in:todo,doing',
+
+            // ---------------------------------------------------------------
+            // Route-group-dependent rules: the same model reached from two
+            // groups can require different things.
+            // ---------------------------------------------------------------
+            // 'assignee_id' => $this->routeGroup() === 'admin'
+            //     ? 'nullable|integer|exists:users,id'
+            //     : 'prohibited',
+
+            // ---------------------------------------------------------------
+            // Record-dependent rules: {{ recordRuleDoc }}
+            // ---------------------------------------------------------------
+            {{ recordRuleExample }}
+        ];
+    }
+
+    /**
+     * Custom messages for the rules above.
+     */
+    // public function messages(): array
+    // {
+    //     return ['title.required' => 'Every {{ modelLower }} needs a title.'];
+    // }
+
+    /**
+     * Cross-field checks that need the whole payload at once.
+     */
+    // public function withValidator(\Illuminate\Validation\Validator $validator): void
+    // {
+    //     $validator->after(function ($validator) {
+    //         if ($this->input('starts_at') > $this->input('ends_at')) {
+    //             $validator->errors()->add('ends_at', 'The end must come after the start.');
+    //         }
+    //     });
+    // }
+}

@@ -124,6 +124,53 @@ return [
     // scope is another fragment in the same SQL statement.
     'max_scopes_per_request' => 3,
 
+    // ------------------------------------------------------------------
+    // Request classes (validation)
+    // ------------------------------------------------------------------
+    // A request class owns the whole shape/format contract of ONE action of
+    // ONE model: it can see the current user, the organization, the route
+    // group and — on update — the record being changed, so rules that depend
+    // on any of them live in ordinary PHP instead of a role-keyed map.
+    //
+    //   namespace App\Http\Requests;
+    //
+    //   use Rhino\Http\Requests\ResourceRequest;
+    //
+    //   class TaskStoreRequest extends ResourceRequest
+    //   {
+    //       public function authorize(): bool { return $this->routeGroup() !== 'public'; }
+    //       public function rules(): array { return ['title' => 'required|string|max:255']; }
+    //   }
+    //
+    // Discovery, per action, first match wins:
+    //   1. The 'map' below, when it names a class for this model and action.
+    //      A class named here that does not exist (or is not a FormRequest) is
+    //      a hard error — a silently ignored validation class is a security
+    //      hole.
+    //   2. Convention: {namespace}\{Model}StoreRequest and
+    //      {namespace}\{Model}UpdateRequest, where {Model} is the model class
+    //      basename (App\Models\Task → TaskStoreRequest). A class that simply
+    //      is not there falls through silently.
+    //   3. Neither: the model's own validation rules apply, unchanged.
+    //
+    // What the class validates is what gets written: only keys covered by a
+    // rule that passed are persisted, so a field with no rule is dropped
+    // rather than saved. The policy's permitted-attributes check still runs
+    // first, on the raw client input, and organization_id is still applied by
+    // the framework afterwards.
+    //
+    // Neither key is required — leaving this whole block out keeps convention
+    // discovery working with the defaults below.
+    'requests' => [
+        // Namespace scanned for {Model}StoreRequest / {Model}UpdateRequest.
+        'namespace' => 'App\\Http\\Requests',
+
+        // Explicit per-model override, keyed by the SAME slug used in 'models'.
+        'map' => [
+            // 'tasks' => ['store' => \App\Api\CreateTask::class, 'update' => \App\Api\EditTask::class],
+        ],
+    ],
+
     'invitations' => [
         'expires_days' => env('INVITATION_EXPIRES_DAYS', 7),
         'allowed_roles' => null, // null means all roles can invite, or specify array of role slugs

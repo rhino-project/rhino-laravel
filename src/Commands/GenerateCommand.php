@@ -17,7 +17,7 @@ class GenerateCommand extends Command
 {
     protected $signature = 'rhino:generate';
 
-    protected $description = 'Generate Rhino resources (Model, Policy, Scope)';
+    protected $description = 'Generate Rhino resources (Model, Policy, Scope, Request)';
 
     protected $aliases = ['rhino:g'];
 
@@ -35,6 +35,7 @@ class GenerateCommand extends Command
                 'model' => 'Model (with migration and factory)',
                 'policy' => 'Policy (extends ResourcePolicy)',
                 'scope' => 'Scope (for ScopedDB)',
+                'request' => 'Request (validation for store/update)',
             ],
         );
 
@@ -54,6 +55,7 @@ class GenerateCommand extends Command
             'model' => $this->generateModel($name),
             'policy' => $this->generatePolicy($name),
             'scope' => $this->generateScope($name),
+            'request' => $this->generateRequest($name),
         };
     }
 
@@ -90,6 +92,7 @@ class GenerateCommand extends Command
             'model' => 'Model',
             'policy' => 'Policy',
             'scope' => 'Scope',
+            'request' => 'Request',
             default => ucfirst($type),
         };
 
@@ -1622,6 +1625,120 @@ class GenerateCommand extends Command
         $this->newLine();
 
         return 0;
+    }
+
+    // ------------------------------------------------------------------
+    // Request generation
+    // ------------------------------------------------------------------
+
+    protected function generateRequest(string $name): int
+    {
+        $this->printSelections('request', $name);
+
+        $modelName = Str::studly(Str::replaceLast('Request', '', $name));
+        $modelName = Str::replaceLast('Store', '', Str::replaceLast('Update', '', $modelName));
+
+        $which = select(
+            label: 'Which request classes would you like?',
+            options: [
+                'both' => "Both ({$modelName}StoreRequest and {$modelName}UpdateRequest)",
+                'store' => "Store only ({$modelName}StoreRequest)",
+                'update' => "Update only ({$modelName}UpdateRequest)",
+            ],
+            default: 'both',
+        );
+
+        $actions = $which === 'both' ? ['store', 'update'] : [$which];
+
+        $created = [];
+
+        foreach ($actions as $action) {
+            $className = $modelName . ($action === 'store' ? 'Store' : 'Update') . 'Request';
+            $requestPath = app_path("Http/Requests/{$className}.php");
+
+            if (File::exists($requestPath)) {
+                warning("Request {$className} already exists at {$requestPath}.");
+                if (!confirm('Do you want to overwrite it?', default: false)) {
+                    info("{$className} skipped.");
+                    continue;
+                }
+            }
+
+            $this->components->task("Generating {$className}", function () use ($className, $modelName, $action, $requestPath) {
+                File::ensureDirectoryExists(app_path('Http/Requests'));
+
+                $stub = $this->getStub('request');
+                $content = $this->replacePlaceholders($stub, [
+                    'className' => $className,
+                    'modelName' => $modelName,
+                    'modelLower' => Str::lower(Str::headline($modelName)),
+                    'action' => $action,
+                    'actionSuffix' => $action === 'store' ? 'Store' : 'Update',
+                    'actionVerb' => $action === 'store' ? 'creating' : 'updating',
+                    'httpCall' => $action === 'store'
+                        ? 'POST /{resource} (and create operations in POST /nested)'
+                        : 'PUT /{resource}/{id} (and update operations in POST /nested)',
+                    'policySuffix' => $action === 'store' ? 'Create' : 'Update',
+                    'presence' => $action === 'store' ? 'required' : 'sometimes',
+                    'recordDoc' => $action === 'store'
+                        ? 'always null on store'
+                        : 'the record as it is BEFORE this update',
+                    'recordRuleDoc' => $action === 'store'
+                        ? 'record() is null on store, so there is nothing to compare against yet.'
+                        : 'record() is the pre-update row, so a rule can compare the incoming value with the stored one.',
+                    'recordRuleExample' => $this->requestRecordRuleExample($action),
+                ]);
+
+                File::put($requestPath, $content);
+            });
+
+            $created[] = $className;
+        }
+
+        if ($created === []) {
+            info('Request generation cancelled.');
+            return 0;
+        }
+
+        $this->newLine();
+        info(implode(' and ', $created) . ' generated successfully!');
+
+        $this->newLine();
+        $this->components->info('Created files:');
+        $this->newLine();
+        foreach ($created as $className) {
+            $this->line("  <fg=gray>Request</>  <fg=white>app/Http/Requests/{$className}.php</>");
+        }
+
+        $this->newLine();
+        $this->components->info('Next steps:');
+        $this->newLine();
+        $this->line("  <fg=yellow>1.</> Declare a rule for <fg=white>every</> field the action should write — a field with no rule is not persisted.");
+        $this->line("  <fg=yellow>2.</> Uncomment <fg=white>authorize()</> / <fg=white>prepare()</> if you need them.");
+        $this->line("  <fg=yellow>3.</> Rhino picks the class up by convention — no registration needed.");
+        $this->line("  <fg=yellow>4.</> Remove <fg=white>\$validationRules</> from <fg=white>App\\Models\\{$modelName}</> once both actions have a request class.");
+        $this->newLine();
+
+        return 0;
+    }
+
+    /**
+     * The commented record-dependent rule example for the request stub. Store
+     * has no record, so it gets a note rather than a misleading example.
+     */
+    protected function requestRecordRuleExample(string $action): string
+    {
+        if ($action === 'store') {
+            return "// (nothing to show here — see the Update request for a record-dependent rule)";
+        }
+
+        return implode("\n            ", [
+            "// 'status' => \\Illuminate\\Validation\\Rule::when(",
+            "//     \$this->record()?->status === 'done',",
+            "//     'in:done,archived',        // a finished record may only move forward",
+            "//     'in:todo,doing,done',",
+            "// ),",
+        ]);
     }
 
     // ------------------------------------------------------------------

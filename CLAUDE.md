@@ -19,6 +19,8 @@ src/
 │   └── InvitationController.php # Invitation CRUD + accept
 ├── Http/Middleware/
 │   └── ResolveOrganizationFromRoute.php  # Multi-tenant org resolution
+├── Http/Requests/
+│   └── ResourceRequest.php     # Base class for {Model}StoreRequest/{Model}UpdateRequest
 ├── Models/
 │   ├── RhinoModel.php         # Base model (includes SoftDeletes, HasValidation, HidableColumns, HasAutoScope)
 │   ├── AuditLog.php            # Polymorphic audit log
@@ -57,8 +59,8 @@ This library provides the following features. When modifying or extending any of
 | 3 | **Authorization & Policies** (convention-based `{slug}.{action}` permissions, wildcards) | `ResourcePolicy.php`, `HasPermissions.php` |
 | 4 | **Role-Based Access Control** (per-org roles via user_roles pivot) | `HasPermissions.php` |
 | 5 | **Attribute-Level Permissions** (read/write field control per role; the read gate also applies to `?filter[]`, `?sort` and `?search`) | `ResourcePolicy.php`, `HidableColumns.php`, `GlobalController.php` (`guardQueryAttributes`) |
-| 6 | **Validation** (format rules via `$validationRules`, field presence via store/update rules, role-keyed) | `HasValidation.php` |
-| 7 | **Cross-Tenant FK Validation** (auto-scopes `exists:` rules to org, even through indirect FK relationships) | `HasValidation.php` |
+| 6 | **Validation** (per-model, per-action request classes: `{Model}StoreRequest` / `{Model}UpdateRequest` extending `ResourceRequest`, discovered by convention in `rhino.requests.namespace` or named in `rhino.requests.map.{slug}.{store\|update}`. An explicit map entry that is missing or is not a FormRequest throws `RuntimeException`; a convention-name collision that is not a FormRequest is logged and ignored, so an upgrading app never newly 500s. They see `user()`/`organization()`/`routeGroup()`/`action()`/`record()`, expose `authorize()` (403) and `prepare()`, and their `validated()` output IS the write payload. DEPRECATED but unchanged: model-level `$validationRules` + store/update rules, role-keyed) | `Http/Requests/ResourceRequest.php`, `GlobalController.php` (`resolveRequestClass`, `runRequestClass`), `Support/TenantExistsRules.php`, `HasValidation.php` (legacy) |
+| 7 | **Cross-Tenant FK Validation** (auto-scopes `exists:` rules to org, even through indirect FK relationships; applies to request-class rules too) | `Support/TenantExistsRules.php`, `HasValidation.php` |
 | 8 | **Filtering** (`?filter[field]=value`, AND/OR logic; 403 when the policy hides the attribute) | `GlobalController.php` (Spatie Query Builder) |
 | 9 | **Sorting** (`?sort=-created_at,title`; 403 when the policy hides the attribute, `$defaultSort` exempt) | `GlobalController.php` |
 | 10 | **Full-Text Search** (`?search=term`, dot-notation for relationships; skips hidden columns, fails closed when all are hidden) | `GlobalController.php` |

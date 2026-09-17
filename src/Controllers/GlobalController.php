@@ -13,7 +13,9 @@ use Rhino\Contracts\HasPermittedAttributes;
 use Rhino\Contracts\HasPermittedScopes;
 use Rhino\Exceptions\InvalidComputedAttributeArguments;
 use Rhino\Exceptions\InvalidScopeArguments;
+use Rhino\Http\Requests\ResourceRequest;
 use Rhino\Support\ComputedAttributeSpec;
+use Rhino\Support\RhinoContext;
 use Rhino\Support\ScopeSpec;
 use Spatie\QueryBuilder\AllowedFilter;
 use Spatie\QueryBuilder\AllowedSort;
@@ -240,8 +242,12 @@ class GlobalController extends Controller
         // In tenant context, organization_id is managed by the framework — strip from input and validation.
         $isTenant = $this->stripOrganizationId($request);
 
+        // A request class owns validation for this action outright: it wins over
+        // every model-level rule config, including the legacy one below.
+        $requestClass = $this->resolveRequestClass('store');
+
         // Legacy path: model has $validationRulesStore/$validationRulesUpdate — preserve exact current behavior
-        if ($this->modelClass->hasLegacyRulesConfig()) {
+        if ($requestClass === null && $this->modelClass->hasLegacyRulesConfig()) {
             $validator = $this->modelClass->validateStore($request);
             if ($validator->fails()) {
                 return response()->json(['errors' => $validator->errors()], 422);
@@ -267,6 +273,22 @@ class GlobalController extends Controller
             return response()->json([
                 'message' => 'You are not allowed to set the following field(s): ' . implode(', ', $forbidden),
             ], 403);
+        }
+
+        // Request-class path. Runs strictly after the forbidden-field gate, so
+        // prepare() sees only input the policy already permitted, and strictly
+        // before the framework-managed organization_id is applied.
+        if ($requestClass !== null) {
+            $result = $this->runRequestClass($requestClass, $request, 'store', null);
+            if ($result instanceof \Illuminate\Http\JsonResponse) {
+                return $result;
+            }
+            $validated = $result;
+
+            $this->addOrganizationToData($validated);
+
+            $record = $this->modelClass::create($validated);
+            return response()->json($this->serializeRecord($record), 201);
         }
 
         // Validate format rules only (permission already checked above)
@@ -357,8 +379,12 @@ class GlobalController extends Controller
             return $rejected;
         }
 
+        // A request class owns validation for this action outright: it wins over
+        // every model-level rule config, including the legacy one below.
+        $requestClass = $this->resolveRequestClass('update');
+
         // Legacy path: model has $validationRulesStore/$validationRulesUpdate — preserve exact current behavior
-        if ($this->modelClass->hasLegacyRulesConfig()) {
+        if ($requestClass === null && $this->modelClass->hasLegacyRulesConfig()) {
             $validator = $this->modelClass->validateUpdate($request);
             if ($validator->fails()) {
                 return response()->json(['errors' => $validator->errors()], 422);
@@ -383,6 +409,21 @@ class GlobalController extends Controller
             return response()->json([
                 'message' => 'You are not allowed to set the following field(s): ' . implode(', ', $forbidden),
             ], 403);
+        }
+
+        // Request-class path. $object is the PRE-UPDATE record, already loaded
+        // through the organization-scoped query above — never re-fetched by
+        // bare id, so a record from another tenant can never reach the rules.
+        if ($requestClass !== null) {
+            $result = $this->runRequestClass($requestClass, $request, 'update', $object);
+            if ($result instanceof \Illuminate\Http\JsonResponse) {
+                return $result;
+            }
+
+            $object->update($result);
+            $object->refresh();
+
+            return response()->json($this->serializeRecord($object));
         }
 
         // Validate format rules only (permission already checked above)
@@ -1574,6 +1615,208 @@ class GlobalController extends Controller
     }
 
     // ------------------------------------------------------------------
+    // Request classes (validation)
+    // ------------------------------------------------------------------
+
+    /**
+     * Resolve the request class that owns validation for one action of one
+     * model, or null when the model has none for that action.
+     *
+     * Precedence, per action, independently:
+     *   1. rhino.requests.map.{slug}.{store|update} — an explicit class name.
+     *      A missing or non-FormRequest class here is a hard error: silently
+     *      ignoring a configured validation class is a security hole.
+     *   2. Convention: {namespace}\{ModelBasename}StoreRequest|UpdateRequest,
+     *      when that class exists AND is a FormRequest. A convention miss falls
+     *      through silently — that is what "convention" means — and so does a
+     *      class that happens to match the name without being a FormRequest:
+     *      an app upgrading from 4.9.0 may already own such a class for its own
+     *      controllers, and Rhino must not start 500ing on it. That case is
+     *      logged once per request instead.
+     *   3. null — the model keeps 4.9.0 behavior for this action.
+     *
+     * Resolved per request, never memoized.
+     *
+     * @param  string  $action  'store' or 'update'
+     * @param  string|null  $slug  Model slug; defaults to the current route's
+     * @param  mixed  $modelClass  Model instance/class; defaults to $this->modelClass
+     * @return class-string|null
+     *
+     * @throws \RuntimeException
+     */
+    protected function resolveRequestClass(string $action, ?string $slug = null, $modelClass = null): ?string
+    {
+        $slug = $slug ?? $this->getModelSlug(request());
+
+        $explicit = config("rhino.requests.map.{$slug}.{$action}");
+        if (is_string($explicit) && $explicit !== '') {
+            if (! class_exists($explicit)) {
+                throw new \RuntimeException(
+                    "Rhino: request class [{$explicit}] configured for [{$slug}.{$action}] does not exist."
+                );
+            }
+
+            if (! is_subclass_of($explicit, \Illuminate\Foundation\Http\FormRequest::class)) {
+                throw new \RuntimeException(
+                    "Rhino: request class [{$explicit}] configured for [{$slug}.{$action}] is not a FormRequest."
+                );
+            }
+
+            return $explicit;
+        }
+
+        $ns = rtrim((string) (config('rhino.requests.namespace') ?: 'App\\Http\\Requests'), '\\');
+        $base = class_basename($modelClass ?? $this->modelClass);
+        $candidate = $ns . '\\' . $base . ($action === 'store' ? 'StoreRequest' : 'UpdateRequest');
+
+        if (! class_exists($candidate)) {
+            return null;
+        }
+
+        // Name collision rather than a Rhino request class: an app that already
+        // had this class before upgrading keeps its 4.9.0 behavior instead of
+        // starting to 500. Explicit map entries still throw — a configured
+        // validation class that is silently ignored is a security hole, but a
+        // class Rhino guessed at is not something the developer asked for.
+        if (! is_subclass_of($candidate, \Illuminate\Foundation\Http\FormRequest::class)) {
+            Log::warning("Rhino: ignoring {$candidate} for [{$slug}.{$action}]: it is not a FormRequest");
+
+            return null;
+        }
+
+        return $candidate;
+    }
+
+    /**
+     * Build the request-class instance and wire it up by hand.
+     *
+     * The container is deliberately NOT used to resolve it: Laravel's
+     * FormRequestServiceProvider registers an afterResolving hook that calls
+     * validateResolved() immediately, which would validate before Rhino can
+     * inject the record/organization/action — rules() would see a null context.
+     * So this does what the framework's own provider does, minus the
+     * auto-validation, and the caller triggers validateResolved() explicitly.
+     *
+     * setRedirector() is not optional: failedValidation() asks the redirector
+     * for a redirect URL, and a null redirector is a fatal error instead of a
+     * 422.
+     *
+     * @param  \Illuminate\Database\Eloquent\Model|null  $record
+     * @param  array<int, string>  $excludeFields  Fields Rhino resolves after
+     *         validation (nested "$N.field" references), whose rules must not run.
+     */
+    protected function makeRequestClassInstance(string $class, Request $request, string $action, $record = null, array $excludeFields = []): \Illuminate\Foundation\Http\FormRequest
+    {
+        /** @var \Illuminate\Foundation\Http\FormRequest $formRequest */
+        $formRequest = $class::createFrom($request, new $class);
+        $formRequest->setContainer(app());
+        $formRequest->setRedirector(app(\Illuminate\Routing\Redirector::class));
+        $formRequest->setUserResolver($request->getUserResolver());
+
+        if ($formRequest instanceof ResourceRequest) {
+            $formRequest->setRhinoContext(
+                auth('sanctum')->user(),
+                request()->attributes->get('organization'),
+                app(RhinoContext::class)->routeGroup(),
+                $action,
+                $record
+            );
+
+            if ($excludeFields !== []) {
+                $formRequest->setRhinoExcludedFields($excludeFields);
+            }
+        }
+
+        return $formRequest;
+    }
+
+    /**
+     * Run a request class for store/update and return either the validated
+     * write payload or the JsonResponse to send back.
+     *
+     * An authorization failure is re-thrown as a FRESH AuthorizationException
+     * carrying the framework's default message, and is NOT rendered here. Two
+     * reasons, both load-bearing:
+     *
+     *  - Parity. Gate::authorize() lets its exception reach the app's handler,
+     *    so an app that renders AccessDeniedHttpException its own way (a
+     *    bootstrap/app.php withExceptions() block, say) gets ITS body for a
+     *    policy denial. Rendering our own JsonResponse here would make the two
+     *    denials differ on the wire, and a client could then tell a
+     *    request-class rejection from a policy one — exactly the information
+     *    leak this 403 exists to prevent.
+     *  - Leak guard. The exception is rebuilt rather than re-thrown, so a
+     *    developer's AuthorizationException('user 42 is not the project owner')
+     *    can never reach the client.
+     *
+     * The 422 IS rendered here, because letting ValidationException escape to
+     * the app's handler would produce its {message, errors} body; Rhino's
+     * envelope is {errors} only.
+     *
+     * @param  \Illuminate\Database\Eloquent\Model|null  $record
+     * @return array|\Illuminate\Http\JsonResponse
+     *
+     * @throws \Illuminate\Auth\Access\AuthorizationException
+     */
+    protected function runRequestClass(string $class, Request $request, string $action, $record = null)
+    {
+        $formRequest = $this->makeRequestClassInstance($class, $request, $action, $record);
+
+        try {
+            $formRequest->validateResolved();
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['errors' => $e->errors()], 422);
+        } catch (\Illuminate\Auth\Access\AuthorizationException | \Illuminate\Validation\UnauthorizedException $e) {
+            // Fresh exception, default message: never the developer's.
+            throw new \Illuminate\Auth\Access\AuthorizationException();
+        }
+
+        return $formRequest->validated();
+    }
+
+    /**
+     * Same as runRequestClass(), but rendering the nested endpoint's error
+     * envelope: validation failures are keyed operations.{index}.data.{field}
+     * and carry the "Validation failed." message, exactly as the legacy and
+     * policy-driven nested paths do.
+     *
+     * The "$N.field" reference keys are handed to the request class as excluded
+     * fields so their rules do not run: the placeholder was stripped from the
+     * input before validation and is merged back into the write payload after,
+     * so a `required` rule on such a field would otherwise reject a value the
+     * client did supply. This mirrors validateForAction()'s $excludeFields.
+     *
+     * Authorization failures are thrown, not rendered — authorizeNestedOperation()
+     * lets Gate::authorize()'s exception escape to the app's handler, so this
+     * must too, or the two would differ on the wire.
+     *
+     * @param  \Illuminate\Database\Eloquent\Model|null  $record
+     * @return array|\Illuminate\Http\JsonResponse
+     *
+     * @throws \Illuminate\Auth\Access\AuthorizationException
+     */
+    protected function runNestedRequestClass(string $class, Request $request, string $action, $record, int $index, array $excludeFields = [])
+    {
+        $formRequest = $this->makeRequestClassInstance($class, $request, $action, $record, $excludeFields);
+
+        try {
+            $formRequest->validateResolved();
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $errors = [];
+            foreach ($e->errors() as $key => $messages) {
+                $errors['operations.' . $index . '.data.' . $key] = $messages;
+            }
+
+            return response()->json(['message' => 'Validation failed.', 'errors' => $errors], 422);
+        } catch (\Illuminate\Auth\Access\AuthorizationException | \Illuminate\Validation\UnauthorizedException $e) {
+            // Fresh exception, default message: never the developer's.
+            throw new \Illuminate\Auth\Access\AuthorizationException();
+        }
+
+        return $formRequest->validated();
+    }
+
+    // ------------------------------------------------------------------
     // Nested create/update endpoint
     // ------------------------------------------------------------------
 
@@ -1682,8 +1925,10 @@ class GlobalController extends Controller
     /**
      * Validate a single operation's data using the model's validation.
      *
-     * Uses the legacy validateStore/validateUpdate when the model has $validationRulesStore/$validationRulesUpdate,
-     * otherwise uses the new policy-driven validateForAction with forbidden field checking.
+     * Uses the model's request class for the operation's action when it has one,
+     * otherwise the legacy validateStore/validateUpdate when the model has
+     * $validationRulesStore/$validationRulesUpdate, otherwise the policy-driven
+     * validateForAction with forbidden field checking.
      *
      * Returns validated array or a 422/403 JsonResponse.
      */
@@ -1718,11 +1963,21 @@ class GlobalController extends Controller
             }
         }
 
-        $subRequest = Request::create('', 'POST', $plainData, [], [], [], []);
-        $fullRequest = Request::create('', 'POST', $operation['data'], [], [], [], []);
+        // The 7th argument is the raw BODY, which must be a string/resource or
+        // null — never an array. A request carrying an array body blows up in
+        // Request::createFrom() on Laravel 13 ("trim(): Argument #1 must be of
+        // type string, array given"), which is how the request-class path
+        // reads these sub-requests.
+        $subRequest = Request::create('', 'POST', $plainData, [], [], [], null);
+        $fullRequest = Request::create('', 'POST', $operation['data'], [], [], [], null);
+
+        // A request class owns validation for this action outright: it wins over
+        // every model-level rule config, including the legacy one below.
+        $requestAction = $operation['action'] === 'create' ? 'store' : 'update';
+        $requestClass = $this->resolveRequestClass($requestAction, $slug, $modelClass);
 
         // Legacy path: model has $validationRulesStore/$validationRulesUpdate
-        if ($modelClass->hasLegacyRulesConfig()) {
+        if ($requestClass === null && $modelClass->hasLegacyRulesConfig()) {
             if ($operation['action'] === 'create') {
                 $validator = $modelClass->validateStore($subRequest);
             } else {
@@ -1749,6 +2004,36 @@ class GlobalController extends Controller
             return response()->json([
                 'message' => 'You are not allowed to set the following field(s): ' . implode(', ', $forbidden),
             ], 403);
+        }
+
+        // Request-class path. The sub-request has the cross-operation "$N.field"
+        // placeholders removed, so a request class never sees one and cannot
+        // reject it; they are merged back into the write payload below exactly
+        // as the other two paths do.
+        if ($requestClass !== null) {
+            $record = null;
+            if ($requestAction === 'update') {
+                // Same organization-scoped, primary-key lookup authorizeNestedOperation
+                // uses — but non-failing. A miss yields null and the authorization
+                // step still produces today's 404, in today's order.
+                $recordQuery = QueryBuilder::for($modelClass::class)->where('id', $operation['id']);
+                $this->applyOrganizationScope($recordQuery);
+                $record = $recordQuery->first();
+            }
+
+            $result = $this->runNestedRequestClass(
+                $requestClass,
+                $subRequest,
+                $requestAction,
+                $record,
+                $index,
+                array_keys($references)
+            );
+            if ($result instanceof \Illuminate\Http\JsonResponse) {
+                return $result;
+            }
+
+            return array_merge($result, $references);
         }
 
         $validator = $modelClass->validateForAction($subRequest, $permittedFields, $action === 'create' ? 'store' : 'update', array_keys($references));

@@ -3,13 +3,18 @@
 namespace Rhino\Traits;
 
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
-use Illuminate\Validation\Rule;
 use Rhino\Contracts\HasRoleBasedValidation;
+use Rhino\Support\TenantExistsRules;
 
 trait HasValidation
 {
+    /**
+     * @deprecated 4.10.0 Model-level validation is superseded by request
+     *             classes ({Model}StoreRequest / {Model}UpdateRequest, see
+     *             \Rhino\Http\Requests\ResourceRequest). It keeps working
+     *             unchanged throughout 4.x and is removed in 5.0.
+     */
     public function validateStore(Request $request): \Illuminate\Validation\Validator
     {
         return Validator::make(
@@ -19,6 +24,9 @@ trait HasValidation
         );
     }
 
+    /**
+     * @deprecated 4.10.0 Superseded by {Model}UpdateRequest — see validateStore().
+     */
     public function validateUpdate(Request $request): \Illuminate\Validation\Validator
     {
         return Validator::make(
@@ -160,6 +168,11 @@ trait HasValidation
      * @param  array<string>  $permittedFields  Fields the user is allowed to send (['*'] = all)
      * @param  string  $action  'store' or 'update'
      * @return \Illuminate\Validation\Validator
+     *
+     * @deprecated 4.10.0 Superseded by request classes
+     *             ({Model}StoreRequest / {Model}UpdateRequest). A model with a
+     *             request class for the action never reaches this method. Kept
+     *             unchanged throughout 4.x, removed in 5.0.
      */
     public function validateForAction(Request $request, array $permittedFields, string $action, array $excludeFields = []): \Illuminate\Validation\Validator
     {
@@ -196,188 +209,38 @@ trait HasValidation
     // ------------------------------------------------------------------
     // Cross-tenant exists: rule scoping
     // ------------------------------------------------------------------
-
-    private static array $orgColumnCache = [];
-    private static array $fkChainCache = [];
+    // The implementation lives in Rhino\Support\TenantExistsRules so that the
+    // request classes (Rhino\Http\Requests\ResourceRequest) apply exactly the
+    // same scoping — including the indirect FK-chain walk — to the rules they
+    // declare. The methods below are thin delegates kept for the existing call
+    // sites and their tests.
+    // ------------------------------------------------------------------
 
     /**
      * In tenant context, scope any `exists:` rules targeting org-scoped tables
      * so that the referenced record must belong to the current organization.
      *
-     * Direct: "exists:blogs,id" → "exists:blogs,id,organization_id,3"
-     * Indirect: "exists:blog_posts,id" → Rule::exists with subquery through FK chain
+     * @see \Rhino\Support\TenantExistsRules::scope()
      */
     private function scopeExistsRulesToOrganization(array $rules): array
     {
-        $organization = request()->attributes->get('organization');
-        if (!$organization) {
-            return $rules;
-        }
-
-        // In tenant context, organization_id is managed by the framework — remove from validation.
-        unset($rules['organization_id']);
-
-        $orgId = $organization->id;
-
-        foreach ($rules as $field => &$ruleSet) {
-            $ruleSet = $this->scopeExistsInRuleSet($ruleSet, $orgId);
-        }
-
-        return $rules;
+        return TenantExistsRules::scope($rules, request()->attributes->get('organization'));
     }
 
     /**
-     * Process a rule set (string or array) and scope any exists: rules to the current org.
-     * Returns string if no Rule objects were needed, array otherwise.
+     * @see \Rhino\Support\TenantExistsRules::scopeInRuleSet()
      */
     private function scopeExistsInRuleSet(string|array $ruleSet, int|string $orgId): string|array
     {
-        if (is_string($ruleSet)) {
-            $parts = explode('|', $ruleSet);
-        } else {
-            $parts = $ruleSet;
-        }
-
-        $needsObjectRule = false;
-        $result = [];
-
-        foreach ($parts as $part) {
-            if (!is_string($part) || !str_starts_with($part, 'exists:')) {
-                $result[] = $part;
-                continue;
-            }
-
-            $params = substr($part, 7); // strip "exists:"
-            $segments = explode(',', $params);
-            $table = $segments[0] ?? null;
-            $column = $segments[1] ?? 'id';
-
-            if (!$table) {
-                $result[] = $part;
-                continue;
-            }
-
-            // Skip if already scoped
-            if (in_array('organization_id', $segments)) {
-                $result[] = $part;
-                continue;
-            }
-
-            // Direct: table has organization_id — simple string append
-            if ($this->tableHasOrganizationId($table)) {
-                $result[] = $part . ',organization_id,' . $orgId;
-                continue;
-            }
-
-            // Indirect: walk FK chain to find org-scoped ancestor
-            $chain = $this->findOrganizationFkChain($table);
-            if ($chain !== null) {
-                $needsObjectRule = true;
-                $result[] = $this->buildScopedExistsRule($table, $column, $orgId, $chain);
-                continue;
-            }
-
-            // No org scoping possible — leave unchanged
-            $result[] = $part;
-        }
-
-        // If no Rule objects were introduced and original was a string, return string
-        if (!$needsObjectRule && is_string($ruleSet)) {
-            return implode('|', $result);
-        }
-
-        return $result;
+        return TenantExistsRules::scopeInRuleSet($ruleSet, $orgId);
     }
 
     /**
-     * Find the FK chain from a table to an org-scoped ancestor table.
-     * Returns an array of steps, or null if no chain exists.
-     *
-     * Each step: ['local_column' => ..., 'foreign_table' => ..., 'foreign_column' => ...]
+     * @see \Rhino\Support\TenantExistsRules::walkFkChain()
      */
-    private function findOrganizationFkChain(string $table): ?array
-    {
-        if (array_key_exists($table, self::$fkChainCache)) {
-            return self::$fkChainCache[$table];
-        }
-
-        $chain = $this->walkFkChain($table, 5, []);
-        self::$fkChainCache[$table] = $chain;
-
-        return $chain;
-    }
-
     private function walkFkChain(string $table, int $maxDepth, array $visited): ?array
     {
-        if ($maxDepth <= 0 || in_array($table, $visited)) {
-            return null;
-        }
-
-        $visited[] = $table;
-
-        try {
-            $foreignKeys = Schema::getForeignKeys($table);
-        } catch (\Exception $e) {
-            return null;
-        }
-
-        foreach ($foreignKeys as $fk) {
-            $localColumn = $fk['columns'][0];
-            $foreignTable = $fk['foreign_table'];
-            $foreignColumn = $fk['foreign_columns'][0];
-
-            if ($this->tableHasOrganizationId($foreignTable)) {
-                return [['local_column' => $localColumn, 'foreign_table' => $foreignTable, 'foreign_column' => $foreignColumn]];
-            }
-
-            $deeper = $this->walkFkChain($foreignTable, $maxDepth - 1, $visited);
-            if ($deeper !== null) {
-                array_unshift($deeper, ['local_column' => $localColumn, 'foreign_table' => $foreignTable, 'foreign_column' => $foreignColumn]);
-                return $deeper;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Build a Rule::exists() with nested whereIn subqueries through the FK chain.
-     */
-    private function buildScopedExistsRule(string $table, string $column, int|string $orgId, array $chain): \Illuminate\Validation\Rules\Exists
-    {
-        return Rule::exists($table, $column)->where(function ($query) use ($orgId, $chain) {
-            $this->applyFkChainScope($query, $orgId, $chain, 0);
-        });
-    }
-
-    private function applyFkChainScope($query, int|string $orgId, array $chain, int $index): void
-    {
-        $step = $chain[$index];
-        $localCol = $step['local_column'];
-        $foreignTable = $step['foreign_table'];
-        $foreignCol = $step['foreign_column'];
-
-        if ($index === count($chain) - 1) {
-            // Last step — the foreign table has organization_id
-            $query->whereIn($localCol, function ($sub) use ($foreignTable, $foreignCol, $orgId) {
-                $sub->select($foreignCol)->from($foreignTable)->where('organization_id', $orgId);
-            });
-        } else {
-            // Intermediate step — recurse deeper
-            $query->whereIn($localCol, function ($sub) use ($foreignTable, $foreignCol, $orgId, $chain, $index) {
-                $sub->select($foreignCol)->from($foreignTable);
-                $this->applyFkChainScope($sub, $orgId, $chain, $index + 1);
-            });
-        }
-    }
-
-    private function tableHasOrganizationId(string $table): bool
-    {
-        if (!isset(self::$orgColumnCache[$table])) {
-            self::$orgColumnCache[$table] = Schema::hasColumn($table, 'organization_id');
-        }
-
-        return self::$orgColumnCache[$table];
+        return TenantExistsRules::walkFkChain($table, $maxDepth, $visited);
     }
 
     /**
@@ -410,6 +273,9 @@ trait HasValidation
      * validateStore/validateUpdate flow instead of the new policy-driven flow.
      *
      * @return bool
+     *
+     * @deprecated 4.10.0 Part of the model-level validation path that request
+     *             classes supersede. Removed in 5.0.
      */
     public function hasLegacyRulesConfig(): bool
     {
